@@ -1,4 +1,4 @@
-# P13 — High-Frequency LOB Modeling (`lobmod`)
+# High-Frequency LOB Modeling (`lobmod`)
 
 A four-language, cross-verified laboratory for high-frequency market microstructure:
 a price-time-priority **limit order book** simulator with deterministic replay, a pinned
