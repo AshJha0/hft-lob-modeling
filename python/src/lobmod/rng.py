@@ -1,0 +1,92 @@
+"""Pinned deterministic random number generator (64-bit LCG).
+
+Every stochastic component of ``lobmod`` (zero-intelligence order flow,
+Ogata thinning) draws from this generator so that all four language
+implementations reproduce bit-identical streams.  The generator is the
+Knuth/MMIX linear congruential generator
+
+    state_{n+1} = (A * state_n + C) mod 2^64,
+    A = 6364136223846793005,  C = 1442695040888963407.
+
+Uniforms take the top 53 bits: ``u = (state >> 11) * 2^-53 in [0, 1)``.
+No other RNG (``random``, ``numpy.random``) may be used anywhere in the
+package.
+"""
+
+from __future__ import annotations
+
+import math
+
+_A: int = 6364136223846793005
+_C: int = 1442695040888963407
+_MASK: int = (1 << 64) - 1
+_INV_2_53: float = 1.0 / (1 << 53)
+
+
+class Lcg64:
+    """Pinned 64-bit LCG; the single source of randomness in ``lobmod``.
+
+    Args:
+        seed: non-negative integer seed; the initial state is ``seed & (2^64-1)``.
+
+    Raises:
+        ValueError: if ``seed`` is negative.
+    """
+
+    def __init__(self, seed: int) -> None:
+        if not isinstance(seed, int) or isinstance(seed, bool):
+            raise ValueError("seed must be an integer")
+        if seed < 0:
+            raise ValueError(f"seed must be non-negative, got {seed}")
+        self._state: int = seed & _MASK
+
+    def next_u64(self) -> int:
+        """Advance the state once and return it as an unsigned 64-bit integer."""
+        self._state = (_A * self._state + _C) & _MASK
+        return self._state
+
+    def uniform(self) -> float:
+        """Uniform double in ``[0, 1)`` from the top 53 bits of the next state."""
+        return (self.next_u64() >> 11) * _INV_2_53
+
+    def exponential(self, rate: float) -> float:
+        """Exponential variate with the given rate: ``-log1p(-u) / rate``.
+
+        Uses ``log1p(-u)`` (u in [0,1)) so the argument of the log never
+        rounds to zero and the draw is always finite and >= 0.
+
+        Raises:
+            ValueError: if ``rate`` is not a positive finite number.
+        """
+        if not (math.isfinite(rate) and rate > 0.0):
+            raise ValueError(f"rate must be positive and finite, got {rate}")
+        return -math.log1p(-self.uniform()) / rate
+
+    def geometric(self, p: float) -> int:
+        """Geometric variate on {0, 1, 2, ...}: number of failures before success.
+
+        Pinned inversion formula ``k = floor(log(1-u) / log(1-p))`` with
+        ``u = uniform()``.
+
+        Raises:
+            ValueError: if ``p`` is not in ``(0, 1)``.
+        """
+        if not (0.0 < p < 1.0):
+            raise ValueError(f"p must be in (0, 1), got {p}")
+        u = self.uniform()
+        return int(math.floor(math.log1p(-u) / math.log1p(-p)))
+
+    def randint(self, n: int) -> int:
+        """Uniform integer in ``{0, ..., n-1}`` as ``floor(uniform() * n)``.
+
+        The tiny modulo bias of this construction is irrelevant here and the
+        formula is trivially portable, which is what matters for golden
+        reproducibility.
+
+        Raises:
+            ValueError: if ``n`` is not a positive integer.
+        """
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+            raise ValueError(f"n must be a positive integer, got {n}")
+        k = int(self.uniform() * n)
+        return n - 1 if k >= n else k

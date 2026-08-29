@@ -1,0 +1,75 @@
+classDiagram
+    class Lcg64 {
+        -state: u64
+        +next_u64() u64
+        +uniform() f64
+        +exponential(rate) f64
+        +geometric(p) int
+        +randint(n) int
+    }
+    class LimitOrderBook {
+        -bids: map~ticks, FIFO~
+        -asks: map~ticks, FIFO~
+        -orders: map~id, side x ticks~
+        +limit(side, price, size, id) fills, rested
+        +cancel(id) removed_size
+        +market(side, size) fills, unfilled
+        +mid() f64
+        +microprice() f64
+        +spread() f64
+        +depth(side, k) int
+    }
+    class Event {
+        +seq: int
+        +etype: L C M
+        +side: B S
+        +price size order_id
+    }
+    class BookStates {
+        +best_bid best_ask
+        +bid_size ask_size
+        +bid_depth_k ask_depth_k
+        +mid microprice spread
+    }
+    class FeatureSet {
+        +X: n x 5
+        +y: labels 0 1 2
+        +fwd_ret spread
+    }
+    class HawkesUniFit {
+        +mu alpha beta
+        +loglik branching
+        +converged n_iter
+    }
+    class HawkesBivFit {
+        +mu[2] alpha[2][2] beta
+        +branching spectral_radius
+    }
+    class NMResult {
+        +x fval n_iter converged
+    }
+    class MLP {
+        -weights biases (pinned sin init)
+        +fit(X, y, lr, epochs) history
+        +predict(X) labels
+        +loss_and_grads(X, y)
+    }
+    class Standardizer {
+        +fit(X_train)
+        +transform(X)
+    }
+
+    Lcg64 <.. "zi.generate_events" : draws
+    Lcg64 <.. "hawkes.simulate" : draws
+    "zi.generate_events" ..> LimitOrderBook : maintains
+    "zi.generate_events" ..> Event : emits
+    "replay.replay" ..> LimitOrderBook : applies events
+    "replay.replay" ..> BookStates : records
+    BookStates <.. "features.compute_features" : reads
+    "features.compute_features" ..> FeatureSet : builds
+    FeatureSet <.. Standardizer
+    FeatureSet <.. MLP
+    "hawkes.fit_uni" ..> NMResult : uses nelder_mead
+    "hawkes.fit_uni" ..> HawkesUniFit : returns
+    "hawkes.fit_biv" ..> HawkesBivFit : returns
+    HawkesUniFit <.. "gof.ks_test_exp" : residuals tested

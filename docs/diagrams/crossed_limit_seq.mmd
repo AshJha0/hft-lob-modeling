@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant T as Trader
+    participant B as LimitOrderBook
+    participant A as Ask side (resting)
+    participant D as Bid side (resting)
+
+    Note over A: 101 x 3 (id 7), 102 x 5 (id 8)
+    T->>B: limit(B, price=102, size=6, id=9)
+    B->>B: validate side, tick grid, size, unique id
+    B->>A: crosses? 102 >= best ask 101 -> match
+    A-->>B: fill 3 @ 101 (maker id 7, FIFO front)
+    Note over B: level 101 empty -> removed
+    A-->>B: fill 3 @ 102 (maker id 8, partial: 5 -> 2)
+    Note over B: executions at RESTING prices,<br/>never through the limit price
+    B->>D: remainder 0 -> nothing rests
+    B-->>T: (fills=[3@101, 3@102], rested_size=0)
+
+    T->>B: market(S, size=40)
+    B->>D: walk bids best-first, FIFO per level
+    D-->>B: fills until bid side exhausted
+    B-->>T: (fills, unfilled=remainder) — reported, not an error
+    Note over B: mid()/spread()/microprice() now NaN (empty side, guarded)

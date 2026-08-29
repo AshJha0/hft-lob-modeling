@@ -1,0 +1,14 @@
+{
+  "ofi_window": 50,
+  "ret_window": 20,
+  "horizon": 10,
+  "epsilon": 0.25,
+  "depth_k": 3,
+  "hidden": [
+    16,
+    8
+  ],
+  "learning_rate": 0.1,
+  "epochs": 800,
+  "train_frac": 0.7
+}

@@ -1,0 +1,225 @@
+{
+  "cases": [
+    {
+      "name": "book_snapshot_event_1000",
+      "inputs": {
+        "event": 1000,
+        "depth_k": 3
+      },
+      "expect": {
+        "best_bid": 999.0,
+        "best_ask": 1000.0,
+        "bid_size": 2.0,
+        "ask_size": 4.0,
+        "bid_depth_k": 21.0,
+        "ask_depth_k": 27.0,
+        "mid": 999.5
+      },
+      "tol": 1e-12
+    },
+    {
+      "name": "book_snapshot_event_3000",
+      "inputs": {
+        "event": 3000,
+        "depth_k": 3
+      },
+      "expect": {
+        "best_bid": 1002.0,
+        "best_ask": 1003.0,
+        "bid_size": 2.0,
+        "ask_size": 5.0,
+        "bid_depth_k": 13.0,
+        "ask_depth_k": 29.0,
+        "mid": 1002.5
+      },
+      "tol": 1e-12
+    },
+    {
+      "name": "book_snapshot_event_5000",
+      "inputs": {
+        "event": 5000,
+        "depth_k": 3
+      },
+      "expect": {
+        "best_bid": 1003.0,
+        "best_ask": 1004.0,
+        "bid_size": 6.0,
+        "ask_size": 1.0,
+        "bid_depth_k": 19.0,
+        "ask_depth_k": 14.0,
+        "mid": 1003.5
+      },
+      "tol": 1e-12
+    },
+    {
+      "name": "microprice_event_2500",
+      "inputs": {
+        "event": 2500
+      },
+      "expect": {
+        "microprice": 986.5172413793103
+      },
+      "tol": 1e-12
+    },
+    {
+      "name": "ofi_event_2200_w100",
+      "inputs": {
+        "event": 2200,
+        "window": 100
+      },
+      "expect": {
+        "ofi": -46.0
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "hawkes_uni_loglik_pinned",
+      "inputs": {
+        "mu": 0.4,
+        "alpha": 0.6,
+        "beta": 1.2,
+        "T": 1000.0
+      },
+      "expect": {
+        "loglik": -738.033935432713
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "hawkes_uni_fit",
+      "inputs": {
+        "T": 1000.0
+      },
+      "expect": {
+        "mu": 0.505210249897267,
+        "alpha": 0.9794946134579829,
+        "beta": 1.6791617499104223
+      },
+      "tol": 0.0001
+    },
+    {
+      "name": "hawkes_uni_branching",
+      "inputs": {
+        "T": 1000.0
+      },
+      "expect": {
+        "branching": 0.5833235621941935
+      },
+      "tol": 1e-06
+    },
+    {
+      "name": "hawkes_uni_ks_fitted",
+      "inputs": {
+        "n": 1211
+      },
+      "expect": {
+        "ks_stat": 0.01720471892734865,
+        "p_value": 0.8631774916574281
+      },
+      "tol": 1e-06
+    },
+    {
+      "name": "hawkes_biv_loglik_pinned",
+      "inputs": {
+        "mu0": 0.25,
+        "mu1": 0.25,
+        "a00": 0.5,
+        "a01": 0.2,
+        "a10": 0.2,
+        "a11": 0.5,
+        "beta": 1.8,
+        "T": 600.0
+      },
+      "expect": {
+        "loglik": -928.1099998809444
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "hawkes_biv_fit_alpha",
+      "inputs": {
+        "T": 600.0
+      },
+      "expect": {
+        "a00": 0.7271783916901713,
+        "a01": 0.3026016654660889,
+        "a10": 0.2946112643838933,
+        "a11": 0.5852041548755131
+      },
+      "tol": 0.001
+    },
+    {
+      "name": "hawkes_biv_spectral_radius",
+      "inputs": {
+        "T": 600.0
+      },
+      "expect": {
+        "spectral_radius": 0.45678479107028125
+      },
+      "tol": 1e-06
+    },
+    {
+      "name": "nn_loss_epoch1",
+      "inputs": {
+        "epochs": 1
+      },
+      "expect": {
+        "loss": 1.0806390309508487
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "nn_loss_final",
+      "inputs": {
+        "epochs": 800
+      },
+      "expect": {
+        "loss": 0.6760014200206087
+      },
+      "tol": 1e-08
+    },
+    {
+      "name": "nn_holdout_accuracy",
+      "inputs": {
+        "n_test": 1305
+      },
+      "expect": {
+        "accuracy": 0.7042145593869732
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "logistic_accuracy",
+      "inputs": {
+        "n_test": 1305
+      },
+      "expect": {
+        "accuracy": 0.6996168582375479
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "majority_accuracy",
+      "inputs": {
+        "majority_class": 1,
+        "n_test": 1305
+      },
+      "expect": {
+        "accuracy": 0.6582375478927203
+      },
+      "tol": 1e-10
+    },
+    {
+      "name": "signal_pnl_after_costs",
+      "inputs": {
+        "n_test": 1305
+      },
+      "expect": {
+        "gross": 45.0,
+        "net": -139.5,
+        "n_trades": 177
+      },
+      "tol": 1e-08
+    }
+  ]
+}
