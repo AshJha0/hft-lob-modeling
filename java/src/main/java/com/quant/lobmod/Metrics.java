@@ -97,12 +97,14 @@ public final class Metrics {
      * PnL of trading the predicted direction with half-spread costs.
      *
      * <p>Position per row: +1 for class 2 (up), -1 for class 0 (down), 0 for
-     * flat. Gross PnL adds {@code pos * fwd_ret} (mid-to-mid, ticks); net PnL
-     * subtracts a half-spread cost {@code spread / 2} per non-flat signal —
-     * the honest floor for crossing the spread on entry.</p>
+     * flat. Gross PnL adds {@code pos * fwd_ret} (mid-to-mid, ticks per unit
+     * size); net PnL subtracts {@code |pos| * spread / 2} per non-flat
+     * signal, charged on entry only (the exit is marked at mid). This is a
+     * signal diagnostic, not a tradable strategy: positions of consecutive
+     * rows overlap; no fees, latency or fill probability.</p>
      *
      * @throws IllegalArgumentException on mismatched, empty, or non-finite
-     *     inputs
+     *     inputs, or a label outside {@code {0, 1, 2}}
      */
     public static Pnl signalPnl(int[] yPred, double[] fwdRet, double[] spread) {
         if (yPred == null || fwdRet == null || spread == null
@@ -114,6 +116,9 @@ public final class Metrics {
             throw new IllegalArgumentException("empty prediction array");
         }
         for (int i = 0; i < yPred.length; i++) {
+            if (yPred[i] < 0 || yPred[i] > 2) {
+                throw new IllegalArgumentException("y_pred labels must be in {0, 1, 2}");
+            }
             if (!Double.isFinite(fwdRet[i]) || !Double.isFinite(spread[i])) {
                 throw new IllegalArgumentException("fwd_ret and spread must be finite");
             }
@@ -124,8 +129,8 @@ public final class Metrics {
         for (int i = 0; i < yPred.length; i++) {
             int pos = yPred[i] - 1; // {0,1,2} -> {-1,0,+1}
             gross += pos * fwdRet[i];
+            cost += Math.abs(pos) * spread[i] * 0.5;
             if (pos != 0) {
-                cost += spread[i] * 0.5;
                 nTrades++;
             }
         }

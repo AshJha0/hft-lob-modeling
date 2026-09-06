@@ -1,29 +1,32 @@
 classDiagram
     class Lcg64 {
-        -state: u64
+        -state: u64 seed in 0..2^63-1
         +next_u64() u64
         +uniform() f64
         +exponential(rate) f64
-        +geometric(p) int
-        +randint(n) int
+        +geometric(p) i64
+        +randint(n) i64
     }
     class LimitOrderBook {
-        -bids: map~ticks, FIFO~
-        -asks: map~ticks, FIFO~
-        -orders: map~id, side x ticks~
+        -bids: map~ticks i64, FIFO~
+        -asks: map~ticks i64, FIFO~
+        -orders: map~id i64, side x ticks~
+        -record_trades: bool
         +limit(side, price, size, id) fills, rested
+        +limit_ticks(side, ticks, size, id) fills, rested
         +cancel(id) removed_size
         +market(side, size) fills, unfilled
         +mid() f64
         +microprice() f64
         +spread() f64
-        +depth(side, k) int
+        +depth(side, k) i64
+        +clear_history()
     }
     class Event {
-        +seq: int
+        +seq: i64
         +etype: L C M
         +side: B S
-        +price size order_id
+        +price ticks i64, size i64, order_id i64
     }
     class BookStates {
         +best_bid best_ask
@@ -40,6 +43,12 @@ classDiagram
         +mu alpha beta
         +loglik branching
         +converged n_iter
+        +warning
+    }
+    class CsvIO {
+        +read_events_csv() write_events_csv()
+        +read_times_csv() write_times_csv()
+        +read_marked_times_csv() write_marked_times_csv()
     }
     class HawkesBivFit {
         +mu[2] alpha[2][2] beta
@@ -49,7 +58,7 @@ classDiagram
         +x fval n_iter converged
     }
     class MLP {
-        -weights biases (pinned sin init)
+        -weights biases pinned sin init
         +fit(X, y, lr, epochs) history
         +predict(X) labels
         +loss_and_grads(X, y)
@@ -59,17 +68,27 @@ classDiagram
         +transform(X)
     }
 
-    Lcg64 <.. "zi.generate_events" : draws
-    Lcg64 <.. "hawkes.simulate" : draws
-    "zi.generate_events" ..> LimitOrderBook : maintains
-    "zi.generate_events" ..> Event : emits
-    "replay.replay" ..> LimitOrderBook : applies events
-    "replay.replay" ..> BookStates : records
-    BookStates <.. "features.compute_features" : reads
-    "features.compute_features" ..> FeatureSet : builds
+    class zi_generate_events["zi.generate_events"]
+    class hawkes_simulate["hawkes.simulate"]
+    class replay_replay["replay.replay"]
+    class features_compute_features["features.compute_features"]
+    class hawkes_fit_uni["hawkes.fit_uni"]
+    class hawkes_fit_biv["hawkes.fit_biv"]
+    class gof_ks_test_exp["gof.ks_test_exp"]
+
+    Lcg64 <.. zi_generate_events : draws
+    Lcg64 <.. hawkes_simulate : draws
+    zi_generate_events ..> LimitOrderBook : maintains
+    zi_generate_events ..> Event : emits
+    replay_replay ..> LimitOrderBook : applies events via limit_ticks
+    replay_replay ..> BookStates : records
+    CsvIO ..> Event : parses, pinned strict rules
+    CsvIO ..> hawkes_fit_uni : event times
+    BookStates <.. features_compute_features : reads
+    features_compute_features ..> FeatureSet : builds
     FeatureSet <.. Standardizer
     FeatureSet <.. MLP
-    "hawkes.fit_uni" ..> NMResult : uses nelder_mead
-    "hawkes.fit_uni" ..> HawkesUniFit : returns
-    "hawkes.fit_biv" ..> HawkesBivFit : returns
-    HawkesUniFit <.. "gof.ks_test_exp" : residuals tested
+    hawkes_fit_uni ..> NMResult : uses nelder_mead
+    hawkes_fit_uni ..> HawkesUniFit : returns
+    hawkes_fit_biv ..> HawkesBivFit : returns
+    HawkesUniFit <.. gof_ks_test_exp : residuals tested

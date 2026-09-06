@@ -24,7 +24,7 @@ std::vector<Event> generate_events(std::int64_t n_events, std::int64_t seed) {
                                     std::to_string(n_events));
     }
     Lcg64 rng(seed);
-    LimitOrderBook book(1.0);
+    LimitOrderBook book(1.0, /*record_trades=*/false);
     std::vector<Event> events;
     events.reserve(static_cast<std::size_t>(n_events));
 

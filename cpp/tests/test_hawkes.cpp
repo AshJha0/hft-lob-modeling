@@ -3,17 +3,34 @@
 /// the pinned Nelder-Mead minimizer.
 
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 #include <gtest/gtest.h>
 
 #include "lobmod/gof.hpp"
 #include "lobmod/hawkes.hpp"
 #include "lobmod/neldermead.hpp"
+#include "lobmod/zi.hpp"
 #include "test_data.hpp"
 
 namespace {
 
 using lobmod::Mat2;
+
+std::string scratch(const std::string& name, const std::string& text) {
+    const std::string path = testing::TempDir() + "lobmod_h_" + name;
+    std::ofstream out(path, std::ios::binary);
+    out << text;
+    return path;
+}
+
+std::string slurp(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+}
 
 TEST(NelderMead, MinimizesQuadratic) {
     const auto f = [](const std::vector<double>& x) {
@@ -219,6 +236,132 @@ TEST(Hawkes, SpectralRadius2x2) {
     EXPECT_THROW(
         lobmod::spectral_radius_2x2({{{std::nan(""), 0.0}, {0.0, 1.0}}}),
         std::invalid_argument);
+}
+
+// ------------------------------------------------------------ review additions
+
+TEST(HawkesFit, ObjectivesArePureUnderUnderflow) {
+    // PT-6
+    const auto& [t, k] = testdata::biv_data();
+    const auto obj = lobmod::biv_fit_objective(t, k, testdata::kBivT);
+    EXPECT_EQ(obj({-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0}), 1e10);
+    EXPECT_EQ(obj({-800.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}), 1e10);  // mu0 underflow
+    EXPECT_EQ(obj({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -800.0}), 1e10);  // beta underflow
+    EXPECT_EQ(obj({0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 800.0}), 1e10);   // overflow
+    const double mu0 = 0.5 * 323 / testdata::kBivT, mu1 = 0.5 * 288 / testdata::kBivT;
+    const std::vector<double> x0 = {std::log(mu0), std::log(mu1), std::log(0.25),
+                                    std::log(0.25), std::log(0.25), std::log(0.25), 0.0};
+    EXPECT_NEAR(obj(x0), -lobmod::biv_loglik(t, k, testdata::kBivT, {mu0, mu1},
+                                             {{{0.25, 0.25}, {0.25, 0.25}}}, 1.0), 1e-12);
+    const auto res = lobmod::nelder_mead(obj, {-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0},
+                                         1e-8, 1e-10, 5);
+    EXPECT_TRUE(std::isfinite(res.fval));
+    const auto uobj = lobmod::uni_fit_objective(testdata::uni_times(), testdata::kUniT);
+    EXPECT_EQ(uobj({-800.0, 0.0, 0.0}), 1e10);
+    EXPECT_EQ(uobj({0.0, 0.0, -800.0}), 1e10);
+    EXPECT_NEAR(uobj({0.0, -800.0, 0.0}),
+                -lobmod::uni_loglik(testdata::uni_times(), testdata::kUniT, 1.0, 0.0, 1.0), 1e-12);
+    const auto capped = lobmod::fit_biv(t, k, testdata::kBivT, 1);
+    EXPECT_FALSE(capped.converged);
+    EXPECT_EQ(capped.n_iter, 2); // two stages x 1 iteration
+    const auto capped_u = lobmod::fit_uni(testdata::uni_times(), testdata::kUniT, 1);
+    EXPECT_FALSE(capped_u.converged);
+    EXPECT_EQ(capped_u.n_iter, 1);
+    EXPECT_THROW(lobmod::fit_uni(testdata::uni_times(), testdata::kUniT, 0), std::invalid_argument);
+}
+
+TEST(HawkesUni, PoissonLimitOfFit) {
+    // PT-8: alpha = 0 is a homogeneous Poisson process; the MLE must find it
+    const double T = 2000.0;
+    const auto t = lobmod::simulate_uni(1.0, 0.0, 1.0, T, 5);
+    ASSERT_GT(t.size(), 1500u);
+    const auto fit = lobmod::fit_uni(t, T);
+    EXPECT_TRUE(fit.converged);
+    EXPECT_LT(fit.branching, 0.05);
+    const double n = static_cast<double>(t.size());
+    const double poisson_ll = lobmod::uni_loglik(t, T, n / T, 0.0, 1.0);
+    EXPECT_GE(fit.loglik, poisson_ll - 1e-6);
+    EXPECT_NEAR(poisson_ll, n * std::log(n / T) - n, 1e-9);
+    EXPECT_EQ(lobmod::uni_loglik(t, T, 0.7, 0.0, 1.0), lobmod::uni_loglik(t, T, 0.7, 0.0, 3.3));
+}
+
+TEST(HawkesUni, SingleEventPaths) {
+    // PT-9
+    const double mu = 0.5, alpha = 0.8, beta = 1.5;
+    const std::vector<double> t = {0.7};
+    const double expected = std::log(mu) - mu * 1.0 + (alpha / beta) * std::expm1(-beta * 0.3);
+    EXPECT_NEAR(lobmod::uni_loglik(t, 1.0, mu, alpha, beta), expected, 1e-15);
+    EXPECT_NEAR(lobmod::uni_loglik_brute(t, 1.0, mu, alpha, beta), expected, 1e-15);
+    const auto tau = lobmod::uni_residuals(t, 1.0, mu, alpha, beta);
+    ASSERT_EQ(tau.size(), 1u);
+    EXPECT_NEAR(tau[0], mu * 0.7, 1e-15);
+    const auto [d, p] = lobmod::ks_test_exp(tau);
+    EXPECT_GT(d, 0.0);
+    EXPECT_LT(d, 1.0);
+    EXPECT_GT(p, 0.0);
+    EXPECT_LE(p, 1.0);
+    const auto fit = lobmod::fit_uni(t, 1.0);
+    EXPECT_TRUE(std::isfinite(fit.loglik));
+    EXPECT_GT(fit.mu, 0.0);
+    EXPECT_GE(fit.n_iter, 1);
+    const std::vector<double> tT = {1.0}; // event exactly at the horizon: expm1(0) = 0
+    EXPECT_NEAR(lobmod::uni_loglik(tT, 1.0, mu, alpha, beta), std::log(mu) - mu, 1e-15);
+    EXPECT_NEAR(lobmod::uni_residuals(tT, 1.0, mu, alpha, beta)[0], mu, 1e-15);
+    EXPECT_THROW(lobmod::fit_biv(tT, {0}, 1.0), std::invalid_argument);
+    EXPECT_NEAR(lobmod::biv_loglik(tT, {0}, 1.0, {0.2, 0.3}, {{{0.1, 0.1}, {0.1, 0.1}}}, 2.0),
+                std::log(0.2) - 0.5, 1e-15);
+}
+
+TEST(Hawkes, TimesCsvRoundTripAndRobustness) {
+    const std::string path = testing::TempDir() + "lobmod_u.csv";
+    lobmod::write_times_csv(path, testdata::uni_times());
+    EXPECT_EQ(lobmod::read_times_csv(path), testdata::uni_times());
+    EXPECT_EQ(slurp(path), slurp(testdata::data_dir() + "/hawkes_uni.csv")); // %.17g: byte-identical
+    const auto& [t, k] = testdata::biv_data();
+    const std::string q = testing::TempDir() + "lobmod_b.csv";
+    lobmod::write_marked_times_csv(q, t, k);
+    const auto back = lobmod::read_marked_times_csv(q);
+    EXPECT_EQ(back.first, t);
+    EXPECT_EQ(back.second, k);
+    EXPECT_EQ(slurp(q), slurp(testdata::data_dir() + "/hawkes_biv.csv"));
+    std::remove(path.c_str());
+    std::remove(q.c_str());
+
+    const std::string body = "t\n0.5\n1.25e0\n";
+    const std::vector<double> want = {0.5, 1.25};
+    EXPECT_EQ(lobmod::read_times_csv(scratch("crlf.csv", "t\r\n0.5\r\n1.25e0\r\n")), want);
+    EXPECT_EQ(lobmod::read_times_csv(scratch("trail.csv", body + "\n")), want);
+    const std::pair<const char*, std::string> bad[] = {
+        {"nan.csv", body + "nan\n"},   {"inf.csv", body + "inf\n"},
+        {"two.csv", body + "1.5,0\n"}, {"word.csv", body + "abc\n"},
+        {"hdr.csv", "time\n0.5\n"},   {"blank.csv", "t\n0.5\n\n1.0\n"},
+        {"space.csv", "t\n 0.5\n"},
+    };
+    for (const auto& [name, text] : bad) {
+        EXPECT_THROW(lobmod::read_times_csv(scratch(name, text)), std::invalid_argument) << name;
+    }
+    const std::string mbody = "t,type\n0.5,0\n1.0,1\n";
+    const auto m = lobmod::read_marked_times_csv(scratch("m.csv", mbody));
+    EXPECT_EQ(m.first, (std::vector<double>{0.5, 1.0}));
+    EXPECT_EQ(m.second, (std::vector<int>{0, 1}));
+    const std::pair<const char*, std::string> mbad[] = {
+        {"type2.csv", mbody + "1.5,2\n"}, {"typef.csv", mbody + "1.5,1.0\n"},
+        {"one.csv", mbody + "1.5\n"},     {"three.csv", mbody + "1.5,1,\n"},
+        {"mhdr.csv", "type,t\n0,0.5\n"},
+    };
+    for (const auto& [name, text] : mbad) {
+        EXPECT_THROW(lobmod::read_marked_times_csv(scratch(name, text)), std::invalid_argument) << name;
+    }
+    EXPECT_THROW(lobmod::write_times_csv(scratch("x.csv", ""), {1.0, std::nan("")}),
+                 std::invalid_argument);
+    EXPECT_THROW(lobmod::write_marked_times_csv(scratch("y.csv", ""), {1.0, 2.0}, {0, 2}),
+                 std::invalid_argument);
+}
+
+TEST(HawkesUni, ExactPoissonLoglikWithZeroAlphaIndependentOfBeta) {
+    const std::vector<double> t = {0.5, 1.2, 1.35, 2.8, 3.1, 3.15, 4.9, 7.2, 7.5, 9.0};
+    EXPECT_NEAR(lobmod::uni_loglik(t, 10.0, 0.7, 0.0, 1.0),
+                10.0 * std::log(0.7) - 7.0, 1e-12);
 }
 
 } // namespace

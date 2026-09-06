@@ -77,36 +77,14 @@ inline const lobmod::BookStates& states() {
 
 /// Bundled univariate Hawkes event times (header "t").
 inline const std::vector<double>& uni_times() {
-    static const auto t = [] {
-        std::ifstream in(data_dir() + "/hawkes_uni.csv");
-        if (!in) throw std::runtime_error("cannot open hawkes_uni.csv");
-        std::string line;
-        std::getline(in, line);
-        std::vector<double> out;
-        while (std::getline(in, line)) {
-            if (!line.empty()) out.push_back(std::stod(line));
-        }
-        return out;
-    }();
+    static const auto t = lobmod::read_times_csv(data_dir() + "/hawkes_uni.csv");
     return t;
 }
 
 /// Bundled bivariate Hawkes stream (header "t,type").
 inline const std::pair<std::vector<double>, std::vector<int>>& biv_data() {
-    static const auto data = [] {
-        std::ifstream in(data_dir() + "/hawkes_biv.csv");
-        if (!in) throw std::runtime_error("cannot open hawkes_biv.csv");
-        std::string line;
-        std::getline(in, line);
-        std::pair<std::vector<double>, std::vector<int>> out;
-        while (std::getline(in, line)) {
-            if (line.empty()) continue;
-            const std::size_t comma = line.find(',');
-            out.first.push_back(std::stod(line.substr(0, comma)));
-            out.second.push_back(std::stoi(line.substr(comma + 1)));
-        }
-        return out;
-    }();
+    static const auto data =
+        lobmod::read_marked_times_csv(data_dir() + "/hawkes_biv.csv");
     return data;
 }
 
@@ -149,17 +127,10 @@ inline const Pipeline& pipeline() {
                                                     config().train_frac);
         pl->train_idx = tr;
         pl->test_idx = te;
-        lobmod::Matrix x_tr(tr.size(), 5), x_te(te.size(), 5);
-        pl->y_train.resize(tr.size());
-        pl->y_test.resize(te.size());
-        for (std::size_t i = 0; i < tr.size(); ++i) {
-            for (std::size_t j = 0; j < 5; ++j) x_tr(i, j) = pl->fs.X[tr[i]][j];
-            pl->y_train[i] = pl->fs.y[tr[i]];
-        }
-        for (std::size_t i = 0; i < te.size(); ++i) {
-            for (std::size_t j = 0; j < 5; ++j) x_te(i, j) = pl->fs.X[te[i]][j];
-            pl->y_test[i] = pl->fs.y[te[i]];
-        }
+        const lobmod::Matrix x_tr = pl->fs.x_rows(tr);
+        const lobmod::Matrix x_te = pl->fs.x_rows(te);
+        pl->y_train = pl->fs.y_rows(tr);
+        pl->y_test = pl->fs.y_rows(te);
         lobmod::Standardizer sc;
         sc.fit(x_tr);
         pl->x_train = sc.transform(x_tr);

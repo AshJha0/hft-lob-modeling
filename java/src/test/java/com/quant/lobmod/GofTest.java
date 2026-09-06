@@ -104,4 +104,29 @@ public class GofTest {
         assertThrows(IllegalArgumentException.class,
                 () -> NelderMead.minimize(x -> 0.0, new double[] {1.0}, 1e-8, 1e-10, 0));
     }
+
+    // ------------------------------------------------------- review additions
+
+    @Test
+    public void ksPvalueSmallLambdaAccuracy() {
+        // PT-10: the dual series makes tiny statistics give p = 1, not 0.87
+        assertEquals(1.0, Gof.ksPvalue(1e-4, 100), 1e-9);
+        int n = 100_000;
+        assertTrue(Gof.ksPvalue(0.5 / n, n) >= 0.999);
+        double prev = 1.0;
+        for (double m : new double[] {0.5, 2.0, 8.0, 32.0, 128.0, 512.0}) {
+            double p = Gof.ksPvalue(m / n, n);
+            assertTrue(p <= prev + 1e-15); // monotone across the branch switch
+            prev = p;
+        }
+        assertEquals(1.0, Gof.kolmogorovQ(0.01), 0.0);
+        assertEquals(1.0, Gof.kolmogorovQ(0.005), 0.0);
+        for (double lam : new double[] {0.0999, 0.1, 0.1001}) {
+            assertEquals(1.0, Gof.kolmogorovQ(lam), 1e-14);
+        }
+        // reference values (scipy.special.kolmogorov)
+        assertEquals(0.963945243664875, Gof.kolmogorovQ(0.5), 1e-14);
+        assertEquals(0.269999671677355, Gof.kolmogorovQ(1.0), 1e-14);
+        assertEquals(0.000670925255780, Gof.kolmogorovQ(2.0), 1e-14);
+    }
 }

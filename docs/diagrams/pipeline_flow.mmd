@@ -1,16 +1,16 @@
 flowchart TD
     subgraph DATA["data/ (bundled, deterministic)"]
-        LC[lob_events.csv<br/>5000 events, seed 20240613]
-        HU[hawkes_uni.csv<br/>1211 event times, seed 101]
-        HB[hawkes_biv.csv<br/>611 times+types, seed 33]
+        LC["lob_events.csv<br/>5000 events, seed 20240613"]
+        HU["hawkes_uni.csv<br/>1211 event times, seed 101"]
+        HB["hawkes_biv.csv<br/>611 times+types, seed 33"]
         FC[features_config.json]
-        GJ[golden/golden.json<br/>18 cases]
+        GJ["golden/golden.json<br/>18 cases"]
     end
 
     subgraph GEN["Generation (regenerable)"]
-        RNG[Lcg64<br/>pinned 64-bit LCG]
-        ZI[zi.generate_events<br/>zero-intelligence flow]
-        SIM[hawkes.simulate_uni/biv<br/>Ogata thinning]
+        RNG["Lcg64<br/>pinned 64-bit LCG"]
+        ZI["zi.generate_events<br/>zero-intelligence flow"]
+        SIM["hawkes.simulate_uni/biv<br/>Ogata thinning"]
         RNG --> ZI
         RNG --> SIM
     end
@@ -19,35 +19,36 @@ flowchart TD
     SIM --> HB
 
     subgraph BOOKSIDE["Book pipeline"]
-        RD[replay.read_events_csv] --> RP[replay.replay]
-        BK[LimitOrderBook<br/>price-time priority] --- RP
-        RP --> BS[BookStates<br/>per-event top-of-book arrays]
-        BS --> FE[features.compute_features<br/>OFI, QI, spread, depth ratio, ret<br/>labels: down/flat/up]
-        FE --> SP[chronological_split 70/30]
-        SP --> STD[Standardizer<br/>train moments only]
-        STD --> NN[MLP 5-16-8-3<br/>full-batch GD, pinned init]
-        STD --> LG[logistic baseline<br/>MLP with no hidden layers]
+        RD["replay.read_events_csv<br/>pinned strict CSV rules"] --> RP["replay.replay<br/>tick_size = 1, limit_ticks"]
+        BK["LimitOrderBook<br/>price-time priority<br/>64-bit ticks, 1..9e18"] --- RP
+        RP --> BS["BookStates<br/>per-event top-of-book arrays"]
+        BS --> FE["features.compute_features<br/>OFI, QI, spread, depth ratio, ret<br/>labels: down/flat/up"]
+        FE --> SP["chronological_split 70/30"]
+        SP --> STD["Standardizer<br/>train moments only"]
+        STD --> NN["MLP 5-16-8-3<br/>full-batch GD, pinned init"]
+        STD --> LG["logistic baseline<br/>MLP with no hidden layers"]
         SP --> MJ[majority baseline]
         NN --> MET[accuracy, confusion matrix]
         LG --> MET
         MJ --> MET
-        NN --> PNL[signal_pnl<br/>gross vs net after half-spread]
+        NN --> PNL["signal_pnl<br/>gross vs net after half-spread"]
     end
     LC --> RD
     FC --> FE
 
     subgraph HAWKESIDE["Hawkes pipeline"]
-        LL[uni_loglik / biv_loglik<br/>O(N) recursion + brute-force check]
-        NM[nelder_mead<br/>on log-parameters]
-        FIT[fit_uni / fit_biv<br/>branching, spectral radius, warnings]
-        RES[uni_residuals / biv_residuals<br/>time-rescaling]
-        KS[gof.ks_test_exp<br/>D + Stephens p-value]
-        LL --> NM --> FIT --> RES --> KS
+        HR["read_times_csv / read_marked_times_csv"]
+        LL["uni_loglik / biv_loglik<br/>O(N) recursion + brute-force check"]
+        NM["nelder_mead<br/>on log-parameters, pure objective"]
+        FIT["fit_uni / fit_biv<br/>branching, spectral radius, warnings, converged"]
+        RES["uni_residuals / biv_residuals<br/>time-rescaling"]
+        KS["gof.ks_test_exp<br/>D + Stephens p-value<br/>two-branch Kolmogorov series"]
+        HR --> LL --> NM --> FIT --> RES --> KS
     end
-    HU --> LL
-    HB --> LL
+    HU --> HR
+    HB --> HR
 
-    MET --> GOLD[golden tests<br/>all four languages]
+    MET --> GOLD["golden tests<br/>all four languages"]
     PNL --> GOLD
     KS --> GOLD
     BS --> GOLD

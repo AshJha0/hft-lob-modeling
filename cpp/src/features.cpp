@@ -141,6 +141,49 @@ FeatureConfig load_feature_config(const std::string& path) {
     return cfg;
 }
 
+namespace {
+
+void check_rows(const std::vector<std::size_t>& idx, std::size_t n) {
+    for (std::size_t i : idx) {
+        if (i >= n) {
+            throw std::invalid_argument("row index " + std::to_string(i) +
+                                        " out of range [0, " + std::to_string(n) + ")");
+        }
+    }
+}
+
+} // namespace
+
+Matrix FeatureSet::x_rows(const std::vector<std::size_t>& idx) const {
+    check_rows(idx, size());
+    Matrix out(idx.size(), 5);
+    for (std::size_t r = 0; r < idx.size(); ++r) {
+        for (std::size_t j = 0; j < 5; ++j) out(r, j) = X[idx[r]][j];
+    }
+    return out;
+}
+
+std::vector<int> FeatureSet::y_rows(const std::vector<std::size_t>& idx) const {
+    check_rows(idx, size());
+    std::vector<int> out(idx.size());
+    for (std::size_t r = 0; r < idx.size(); ++r) out[r] = y[idx[r]];
+    return out;
+}
+
+std::vector<double> FeatureSet::fwd_ret_rows(const std::vector<std::size_t>& idx) const {
+    check_rows(idx, size());
+    std::vector<double> out(idx.size());
+    for (std::size_t r = 0; r < idx.size(); ++r) out[r] = fwd_ret[idx[r]];
+    return out;
+}
+
+std::vector<double> FeatureSet::spread_rows(const std::vector<std::size_t>& idx) const {
+    check_rows(idx, size());
+    std::vector<double> out(idx.size());
+    for (std::size_t r = 0; r < idx.size(); ++r) out[r] = spread[idx[r]];
+    return out;
+}
+
 std::vector<double> ofi_series(const BookStates& states) {
     const std::size_t n = states.size();
     std::vector<double> e(n, std::nan(""));
@@ -171,7 +214,8 @@ double ofi_at(const BookStates& states, std::size_t event_index, int window) {
         throw std::invalid_argument("event_index " + std::to_string(event_index) +
                                     " out of range [0, " + std::to_string(n) + ")");
     }
-    if (event_index + 1 < static_cast<std::size_t>(window)) {
+    // pinned: error iff event_index < window (e_0 is undefined)
+    if (event_index < static_cast<std::size_t>(window)) {
         throw std::invalid_argument("window " + std::to_string(window) +
                                     " does not fit before event " +
                                     std::to_string(event_index));

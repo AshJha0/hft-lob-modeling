@@ -2,7 +2,7 @@ package com.quant.lobmod;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.OptionalInt;
+import java.util.OptionalLong;
 
 /**
  * Zero-intelligence order-flow generator (pinned, seeded).
@@ -28,7 +28,7 @@ public final class ZiGenerator {
     private static final double P_AGGRESSIVE = 0.12;
     private static final double P_GEOMETRIC = 0.35;
     private static final double P_SWEEP = 0.02;
-    private static final int REF_PRICE = 1000;
+    private static final long REF_PRICE = 1000;
 
     private ZiGenerator() {
     }
@@ -48,7 +48,7 @@ public final class ZiGenerator {
             throw new IllegalArgumentException("n_events must be an integer >= 12, got " + nEvents);
         }
         Lcg64 rng = new Lcg64(seed);
-        LimitOrderBook book = new LimitOrderBook(1.0);
+        LimitOrderBook book = new LimitOrderBook(1.0, false);
         List<Event> events = new ArrayList<>(nEvents);
 
         // -- seed phase: 6 levels each side, size 10
@@ -59,9 +59,9 @@ public final class ZiGenerator {
 
         // -- stochastic phase
         while (events.size() < nEvents) {
-            int seq = events.size() + 1;
-            int nb = book.nOrders('B');
-            int ns = book.nOrders('S');
+            long seq = events.size() + 1;
+            long nb = book.nOrders('B');
+            long ns = book.nOrders('S');
             double[] rates = {
                 RATE_LIMIT,                     // limit buy
                 RATE_LIMIT,                     // limit sell
@@ -84,28 +84,28 @@ public final class ZiGenerator {
 
             if (kind == 0 || kind == 1) { // limit order
                 boolean buy = kind == 0;
-                OptionalInt oppBest = buy ? book.bestAsk() : book.bestBid();
+                OptionalLong oppBest = buy ? book.bestAsk() : book.bestBid();
                 double u2 = rng.uniform();
-                int price;
+                long price;
                 if (u2 < P_AGGRESSIVE && oppBest.isPresent()) {
-                    price = oppBest.getAsInt();
+                    price = oppBest.getAsLong();
                 } else {
-                    int k = rng.geometric(P_GEOMETRIC);
-                    int anchor = oppBest.isPresent() ? oppBest.getAsInt() : REF_PRICE;
+                    long k = rng.geometric(P_GEOMETRIC);
+                    long anchor = oppBest.isPresent() ? oppBest.getAsLong() : REF_PRICE;
                     price = buy ? anchor - (1 + k) : anchor + (1 + k);
                 }
                 price = Math.max(price, 1);
-                int size = 1 + rng.randint(5);
+                long size = 1 + rng.randint(5);
                 emit(book, events, 'L', buy ? 'B' : 'S', price, size, seq);
             } else if (kind == 2 || kind == 3) { // cancel
                 char side = kind == 2 ? 'B' : 'S';
-                int[] ids = book.orderIds(side);
-                int oid = ids[rng.randint(ids.length)];
+                long[] ids = book.orderIds(side);
+                long oid = ids[(int) rng.randint(ids.length)];
                 emit(book, events, 'C', side, 0, 0, oid);
             } else { // market order
                 char side = kind == 4 ? 'B' : 'S';
                 double u3 = rng.uniform();
-                int size = u3 < P_SWEEP ? 40 + rng.randint(40) : 1 + rng.randint(3);
+                long size = u3 < P_SWEEP ? 40 + rng.randint(40) : 1 + rng.randint(3);
                 emit(book, events, 'M', side, 0, size, 0);
             }
         }
@@ -113,7 +113,7 @@ public final class ZiGenerator {
     }
 
     private static void emit(LimitOrderBook book, List<Event> events,
-            char etype, char side, int price, int size, int orderId) {
+            char etype, char side, long price, long size, long orderId) {
         Event event = new Event(events.size() + 1, etype, side, price, size, orderId);
         Replay.applyEvent(book, event);
         events.add(event);

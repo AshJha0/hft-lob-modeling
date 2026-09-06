@@ -1,7 +1,7 @@
 //! KS goodness-of-fit tests: statistic values, pinned p-value formula, tiny
 //! samples, monotonicity in D, validation errors.
 
-use lobmod::{ks_pvalue, ks_statistic_exp, ks_test_exp};
+use lobmod::{kolmogorov_q, ks_pvalue, ks_statistic_exp, ks_test_exp};
 
 #[test]
 fn ks_statistic_single_point() {
@@ -74,4 +74,29 @@ fn ks_detects_wrong_distribution() {
     let (d, p) = ks_test_exp(&sample).unwrap();
     assert!(d > 0.5);
     assert!(p < 1e-6);
+}
+
+// ---------------------------------------------------------------- review additions
+
+#[test]
+fn ks_pvalue_small_lambda_accuracy() {
+    // PT-10: the dual series makes tiny statistics give p = 1, not 0.87
+    assert!((ks_pvalue(1e-4, 100).unwrap() - 1.0).abs() < 1e-9);
+    let n = 100_000usize;
+    assert!(ks_pvalue(0.5 / n as f64, n).unwrap() >= 0.999);
+    let mut prev = 1.0;
+    for m in [0.5, 2.0, 8.0, 32.0, 128.0, 512.0] {
+        let p = ks_pvalue(m / n as f64, n).unwrap();
+        assert!(p <= prev + 1e-15); // monotone across the branch switch
+        prev = p;
+    }
+    assert_eq!(kolmogorov_q(0.01), 1.0);
+    assert_eq!(kolmogorov_q(0.005), 1.0);
+    for lam in [0.0999, 0.1, 0.1001] {
+        assert!((kolmogorov_q(lam) - 1.0).abs() < 1e-14);
+    }
+    // reference values (scipy.special.kolmogorov)
+    assert!((kolmogorov_q(0.5) - 0.963945243664875).abs() < 1e-14);
+    assert!((kolmogorov_q(1.0) - 0.269999671677355).abs() < 1e-14);
+    assert!((kolmogorov_q(2.0) - 0.000670925255780).abs() < 1e-14);
 }

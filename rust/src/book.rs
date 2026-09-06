@@ -20,10 +20,24 @@
 //!
 //! All quantities that need both sides of the book return NaN when a side is
 //! empty (guarded, never an error).
+//!
+//! Tick conversion (pinned, identical in every port): `ratio = price / tick`,
+//! rounded half up; accepted iff `|ratio - ticks| <= 1e-9 * max(1, ratio)`
+//! and `1 <= ticks <= MAX_TICKS` (9e18).  A price that rounds to 0 ticks or
+//! would overflow a signed 64-bit tick count is an error — never a negative
+//! price and never an unbounded market order.  [`LimitOrderBook::limit_ticks`]
+//! takes the integer tick count directly (the replay path).
+//!
+//! Memory: `trades` grows for the life of the book; construct with
+//! [`LimitOrderBook::with_options`] (`record_trades = false`) or call
+//! [`LimitOrderBook::clear_history`] for long sessions.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::error::{LobError, Result};
+
+/// Largest accepted tick count / size (fits a signed 64-bit integer).
+pub const MAX_TICKS: i64 = 9_000_000_000_000_000_000;
 
 /// Book side: bids (`B`) or asks (`S`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +84,7 @@ pub struct Fill {
 #[derive(Debug, Clone)]
 pub struct LimitOrderBook {
     tick_size: f64,
+    record_trades: bool,
     /// price level (ticks) -> FIFO queue of (order_id, remaining size)
     bids: BTreeMap<i64, VecDeque<(i64, i64)>>,
     asks: BTreeMap<i64, VecDeque<(i64, i64)>>,
@@ -85,6 +100,15 @@ impl LimitOrderBook {
     /// # Errors
     /// [`LobError::InvalidInput`] unless `tick_size` is positive and finite.
     pub fn new(tick_size: f64) -> Result<Self> {
+        Self::with_options(tick_size, true)
+    }
+
+    /// Create an empty book, optionally without recording fills in
+    /// [`LimitOrderBook::trades`] (matching is unaffected).
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] unless `tick_size` is positive and finite.
+    pub fn with_options(tick_size: f64, record_trades: bool) -> Result<Self> {
         if !(tick_size.is_finite() && tick_size > 0.0) {
             return Err(LobError::InvalidInput(format!(
                 "tick_size must be positive and finite, got {tick_size}"
@@ -92,6 +116,7 @@ impl LimitOrderBook {
         }
         Ok(Self {
             tick_size,
+            record_trades,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             orders: HashMap::new(),
@@ -104,7 +129,20 @@ impl LimitOrderBook {
         self.tick_size
     }
 
+    /// Whether fills are being recorded in `trades`.
+    pub fn record_trades(&self) -> bool {
+        self.record_trades
+    }
+
+    /// Drop the accumulated `trades` (book unchanged).
+    pub fn clear_history(&mut self) {
+        self.trades.clear();
+    }
+
     /// Validate that `price` sits on the tick grid and convert it to ticks.
+    ///
+    /// Pinned rule: round half up, residual within `1e-9 * max(1, ratio)`,
+    /// result in `[1, MAX_TICKS]`.
     fn to_ticks(&self, price: f64) -> Result<i64> {
         if !price.is_finite() || price <= 0.0 {
             return Err(LobError::InvalidInput(format!(
@@ -112,20 +150,47 @@ impl LimitOrderBook {
             )));
         }
         let ratio = price / self.tick_size;
-        let ticks = ratio.round();
-        if (ratio - ticks).abs() > 1e-9 * ratio.abs().max(1.0) {
+        let mut ticks = ratio.floor();
+        if ratio - ticks >= 0.5 {
+            ticks += 1.0;
+        }
+        if (ratio - ticks).abs() > 1e-9 * ratio.max(1.0) {
             return Err(LobError::InvalidInput(format!(
                 "price {price} is not a multiple of tick_size {}",
                 self.tick_size
             )));
         }
-        Ok(ticks as i64)
+        if ticks < 1.0 {
+            return Err(LobError::InvalidInput(format!(
+                "price {price} rounds to 0 ticks; prices must be >= 1 tick"
+            )));
+        }
+        if ticks > MAX_TICKS as f64 {
+            return Err(LobError::InvalidInput(format!(
+                "price {price} is {ticks:e} ticks, above MAX_TICKS"
+            )));
+        }
+        Ok(ticks as i64) // in [1, 9e18]: exact conversion
+    }
+
+    fn check_ticks(ticks: i64) -> Result<i64> {
+        if ticks < 1 {
+            return Err(LobError::InvalidInput(format!(
+                "price_ticks must be >= 1, got {ticks}"
+            )));
+        }
+        if ticks > MAX_TICKS {
+            return Err(LobError::InvalidInput(format!(
+                "price_ticks {ticks} exceeds MAX_TICKS"
+            )));
+        }
+        Ok(ticks)
     }
 
     fn check_size(size: i64) -> Result<i64> {
-        if size <= 0 {
+        if size <= 0 || size > MAX_TICKS {
             return Err(LobError::InvalidInput(format!(
-                "size must be a positive integer, got {size}"
+                "size must be a positive integer <= 9e18, got {size}"
             )));
         }
         Ok(size)
@@ -293,7 +358,9 @@ impl LimitOrderBook {
                 opp.remove(&best);
             }
         }
-        self.trades.extend(fills.iter().copied());
+        if self.record_trades {
+            self.trades.extend(fills.iter().copied());
+        }
         (fills, remaining)
     }
 
@@ -307,8 +374,8 @@ impl LimitOrderBook {
     /// Returns `(fills, rested_size)` — `rested_size` is 0 if fully executed.
     ///
     /// # Errors
-    /// [`LobError::InvalidInput`] on bad price/size or a duplicate live
-    /// `order_id`.
+    /// [`LobError::InvalidInput`] on bad price/size, a price outside
+    /// `[1, MAX_TICKS]` ticks, or a duplicate live `order_id`.
     pub fn limit(
         &mut self,
         side: Side,
@@ -318,6 +385,24 @@ impl LimitOrderBook {
     ) -> Result<(Vec<Fill>, i64)> {
         Self::check_size(size)?;
         let ticks = self.to_ticks(price)?;
+        self.limit_ticks(side, ticks, size, order_id)
+    }
+
+    /// Submit a limit order priced directly in ticks (no float conversion);
+    /// identical semantics to [`LimitOrderBook::limit`].  `price_ticks` must
+    /// lie in `[1, MAX_TICKS]`.
+    ///
+    /// # Errors
+    /// As [`LimitOrderBook::limit`].
+    pub fn limit_ticks(
+        &mut self,
+        side: Side,
+        price_ticks: i64,
+        size: i64,
+        order_id: i64,
+    ) -> Result<(Vec<Fill>, i64)> {
+        Self::check_size(size)?;
+        let ticks = Self::check_ticks(price_ticks)?;
         if self.orders.contains_key(&order_id) {
             return Err(LobError::InvalidInput(format!(
                 "order_id {order_id} is already live in the book"

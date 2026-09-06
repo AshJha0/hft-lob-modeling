@@ -10,6 +10,11 @@
 /// implementation.  After *each* event the replay records the top-of-book
 /// state; the BookStates arrays are the single input to the feature
 /// pipeline (features.hpp).
+///
+/// Event::price is a *tick count*, never a currency price: replay() takes
+/// no tick size and drives a tick_size = 1 book through limit_ticks().
+/// CSV parsing follows the pinned rules in csv.hpp; type must be one of
+/// L/C/M and side one of B/S at parse time.
 
 #include <cstddef>
 #include <cstdint>
@@ -52,16 +57,20 @@ struct BookStates {
 ///         unreadable file.
 std::vector<Event> read_events_csv(const std::string& path);
 
+/// Write an event stream CSV with the pinned header ('\n' line endings).
+/// \throws std::invalid_argument if the file cannot be written.
+void write_events_csv(const std::string& path, const std::vector<Event>& events);
+
 /// Apply one event to the book.
 /// \throws std::invalid_argument on an unknown event type or any book-level
 ///         validation error (e.g. cancel of an unknown id).
 void apply_event(LimitOrderBook& book, const Event& event);
 
-/// Replay events through a fresh book (given tick size), recording the
-/// top-of-book state after each event.
-/// \throws std::invalid_argument if the stream is empty or an event is bad.
-BookStates replay(const std::vector<Event>& events, int depth_k = 3,
-                  double tick_size = 1.0);
+/// Replay events through a fresh tick_size = 1 book (event prices are tick
+/// counts), recording the top-of-book state after each event.
+/// \throws std::invalid_argument if the stream is empty, depth_k <= 0, or
+///         an event is bad.
+BookStates replay(const std::vector<Event>& events, int depth_k = 3);
 
 } // namespace lobmod
 

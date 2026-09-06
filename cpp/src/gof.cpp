@@ -41,14 +41,32 @@ double ks_pvalue(double d, long long n) {
     if (d == 0.0) return 1.0;
     const double sqrt_n = std::sqrt(static_cast<double>(n));
     const double lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d;
-    double total = 0.0;
-    for (int j = 1; j <= 100; ++j) { // pinned: exactly 100 terms
-        const double term =
-            std::exp(-2.0 * static_cast<double>(j) * static_cast<double>(j) *
-                     lam * lam);
-        total += j % 2 == 1 ? term : -term;
+    return kolmogorov_q(lam);
+}
+
+double kolmogorov_q(double lam) {
+    constexpr int kTerms = 100; // pinned: exactly 100 terms in either branch
+    constexpr double kSwitch = 0.1;
+    double p;
+    if (lam < kSwitch) {
+        // dual (Jacobi theta) form, Numerical Recipes eq. 14.3.20
+        const double pi = 3.14159265358979323846;
+        double total = 0.0;
+        for (int j = 1; j <= kTerms; ++j) {
+            const double m = 2.0 * j - 1.0;
+            total += std::exp(-(m * m) * pi * pi / (8.0 * lam * lam));
+        }
+        p = 1.0 - (std::sqrt(2.0 * pi) / lam) * total;
+    } else {
+        double total = 0.0;
+        for (int j = 1; j <= kTerms; ++j) {
+            const double term =
+                std::exp(-2.0 * static_cast<double>(j) * static_cast<double>(j) *
+                         lam * lam);
+            total += j % 2 == 1 ? term : -term;
+        }
+        p = 2.0 * total;
     }
-    const double p = 2.0 * total;
     return std::min(1.0, std::max(0.0, p));
 }
 

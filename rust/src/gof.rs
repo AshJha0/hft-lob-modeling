@@ -16,12 +16,20 @@
 //!   Recipes pinned form): with
 //!   `lambda = (sqrt(n) + 0.12 + 0.11 / sqrt(n)) * D_n`, the p-value is the
 //!   Kolmogorov tail series
-//!   `Q(lambda) = 2 * sum_{j=1}^{100} (-1)^{j-1} exp(-2 j^2 lambda^2)`,
-//!   clipped to `[0, 1]`.  The series is pinned at exactly 100 terms.  With
-//!   very small n the asymptotic p-value is only indicative — callers should
-//!   treat it as such (documented, not an error).
+//!   `Q(lambda) = 2 * sum_{j=1}^{100} (-1)^{j-1} exp(-2 j^2 lambda^2)` for
+//!   `lambda >= 0.1`, or — because that alternating series converges too
+//!   slowly for small lambda (100 terms are off by 0.13 at lambda = 0.01) —
+//!   the dual (Jacobi theta) form, Numerical Recipes eq. 14.3.20,
+//!   `Q(lambda) = 1 - (sqrt(2 pi)/lambda) * sum_{j=1}^{100}
+//!   exp(-(2j-1)^2 pi^2 / (8 lambda^2))` for `lambda < 0.1`; clipped to
+//!   `[0, 1]`.  Both branches are pinned at exactly 100 terms.  With very
+//!   small n the asymptotic p-value is only indicative — callers should treat
+//!   it as such (documented, not an error).
 
 use crate::error::{LobError, Result};
+
+const LAMBDA_SWITCH: f64 = 0.1;
+const N_TERMS: u32 = 100;
 
 /// KS statistic of `sample` against the Exp(1) CDF.
 ///
@@ -75,18 +83,34 @@ pub fn ks_pvalue(d: f64, n: usize) -> Result<f64> {
     }
     let sqrt_n = (n as f64).sqrt();
     let lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d;
-    let mut total = 0.0;
-    for j in 1..=100u32 {
-        let jj = j as f64;
-        let term = (-2.0 * jj * jj * lam * lam).exp();
-        if j % 2 == 1 {
-            total += term;
-        } else {
-            total -= term;
+    Ok(kolmogorov_q(lam))
+}
+
+/// Kolmogorov tail probability `Q(lambda)` by the pinned two-branch
+/// evaluation (`lambda >= 0`), clipped to `[0, 1]`.
+pub fn kolmogorov_q(lam: f64) -> f64 {
+    let p = if lam < LAMBDA_SWITCH {
+        let pi = std::f64::consts::PI;
+        let mut total = 0.0;
+        for j in 1..=N_TERMS {
+            let m = 2.0 * j as f64 - 1.0;
+            total += (-(m * m) * pi * pi / (8.0 * lam * lam)).exp();
         }
-    }
-    let p = 2.0 * total;
-    Ok(p.clamp(0.0, 1.0))
+        1.0 - ((2.0 * pi).sqrt() / lam) * total
+    } else {
+        let mut total = 0.0;
+        for j in 1..=N_TERMS {
+            let jj = j as f64;
+            let term = (-2.0 * jj * jj * lam * lam).exp();
+            if j % 2 == 1 {
+                total += term;
+            } else {
+                total -= term;
+            }
+        }
+        2.0 * total
+    };
+    p.clamp(0.0, 1.0)
 }
 
 /// KS test of `sample` against Exp(1): returns `(statistic, p_value)`.

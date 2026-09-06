@@ -19,10 +19,11 @@ const A: u64 = 6364136223846793005;
 const C: u64 = 1442695040888963407;
 const INV_2_53: f64 = 1.0 / (1u64 << 53) as f64;
 
+/// Largest accepted seed: the pinned domain is `[0, 2^63 - 1]`, the range
+/// every language port can represent without wrapping or masking.
+pub const MAX_SEED: u64 = i64::MAX as u64;
+
 /// Pinned 64-bit LCG; the single source of randomness in `lobmod`.
-///
-/// The contract requires a non-negative seed; the `u64` type makes a negative
-/// seed unrepresentable, so construction is infallible.
 #[derive(Debug, Clone)]
 pub struct Lcg64 {
     state: u64,
@@ -30,8 +31,18 @@ pub struct Lcg64 {
 
 impl Lcg64 {
     /// Create a generator with initial state `seed`.
-    pub fn new(seed: u64) -> Self {
-        Self { state: seed }
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if `seed > MAX_SEED` (2^63 - 1): such
+    /// seeds are unrepresentable in the C++/Java ports, so they are rejected
+    /// here rather than silently accepted.
+    pub fn new(seed: u64) -> Result<Self> {
+        if seed > MAX_SEED {
+            return Err(LobError::InvalidInput(format!(
+                "seed must be in [0, {MAX_SEED}], got {seed}"
+            )));
+        }
+        Ok(Self { state: seed })
     }
 
     /// Advance the state once and return it as an unsigned 64-bit integer.
@@ -103,16 +114,16 @@ mod tests {
     #[test]
     fn lcg_sequence_is_pinned() {
         // First states from seed 1 of the Knuth/MMIX LCG.
-        let mut rng = Lcg64::new(1);
+        let mut rng = Lcg64::new(1).unwrap();
         let s1 = rng.next_u64();
         assert_eq!(s1, 6364136223846793005u64.wrapping_add(1442695040888963407));
-        let mut rng2 = Lcg64::new(1);
+        let mut rng2 = Lcg64::new(1).unwrap();
         assert_eq!(rng2.next_u64(), s1); // deterministic per seed
     }
 
     #[test]
     fn uniform_in_unit_interval() {
-        let mut rng = Lcg64::new(42);
+        let mut rng = Lcg64::new(42).unwrap();
         for _ in 0..1000 {
             let u = rng.uniform();
             assert!((0.0..1.0).contains(&u));
@@ -121,7 +132,7 @@ mod tests {
 
     #[test]
     fn variate_validation() {
-        let mut rng = Lcg64::new(7);
+        let mut rng = Lcg64::new(7).unwrap();
         assert!(rng.exponential(0.0).is_err());
         assert!(rng.exponential(f64::NAN).is_err());
         assert!(rng.geometric(0.0).is_err());
@@ -131,5 +142,7 @@ mod tests {
         assert!(k < 5);
         assert!(rng.exponential(2.0).unwrap() >= 0.0);
         assert!(rng.geometric(0.35).unwrap() >= 0);
+        assert!(Lcg64::new(MAX_SEED).is_ok());
+        assert!(Lcg64::new(MAX_SEED + 1).is_err());
     }
 }

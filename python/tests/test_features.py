@@ -139,3 +139,20 @@ def test_feature_config_validation():
         cfg_small(train_frac=1.5)
     with pytest.raises(ValueError, match="hidden"):
         cfg_small(hidden=(4, 0))
+
+
+# ----------------------------------------------------------- review additions
+
+def test_ofi_at_window_boundary():
+    """PT-3: error iff event_index < window; event_index == window is valid."""
+    st = states_from([(100, 5, 101, 5)] * 10)
+    with pytest.raises(ValueError, match="does not fit"):
+        lm.ofi_at(st, 3, 4)
+    assert lm.ofi_at(st, 4, 4) == 0.0  # sums e_1..e_4, all defined and zero
+    assert math.isfinite(lm.ofi_at(st, 4, 4))
+    with pytest.raises(ValueError, match="does not fit"):
+        lm.ofi_at(st, 9, 10)
+    assert lm.ofi_at(st, 9, 9) == 0.0
+    with pytest.raises(ValueError, match="window"):
+        lm.ofi_at(st, 4, 2.0)
+    assert lm.ofi_at(st, np.int64(4), np.int64(4)) == 0.0

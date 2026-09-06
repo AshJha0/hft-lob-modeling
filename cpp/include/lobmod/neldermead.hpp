@@ -2,7 +2,7 @@
 #define LOBMOD_NELDERMEAD_HPP
 
 /// \file neldermead.hpp
-/// \brief Native Nelder-Mead simplex minimizer (P02-pinned configuration).
+/// \brief Native Nelder-Mead simplex minimizer (pinned scipy-compatible configuration).
 ///
 /// Deterministic derivative-free minimization of f: R^n -> double.  The
 /// configuration is pinned so that every language reproduces the same

@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ._validate import as_int
 from .book import LimitOrderBook
 from .replay import Event, apply_event
 from .rng import Lcg64
@@ -64,10 +65,11 @@ def generate_events(n_events: int, seed: int) -> List[Event]:
     Raises:
         ValueError: if ``n_events < 12`` or the seed is invalid.
     """
-    if not isinstance(n_events, int) or isinstance(n_events, bool) or n_events < 12:
+    n_events = as_int("n_events", n_events)
+    if n_events < 12:
         raise ValueError(f"n_events must be an integer >= 12, got {n_events}")
     rng = Lcg64(seed)
-    book = LimitOrderBook(tick_size=1.0)
+    book = LimitOrderBook(tick_size=1.0, record_trades=False)
     events: List[Event] = []
 
     def emit(etype: str, side: str, price: int, size: int, order_id: int) -> None:

@@ -76,7 +76,7 @@ final class TestData {
 
     static synchronized BookStates states() {
         if (states == null) {
-            states = Replay.replay(events(), 3, 1.0);
+            states = Replay.replay(events(), 3);
         }
         return states;
     }
@@ -87,9 +87,7 @@ final class TestData {
 
     static synchronized double[] uniTimes() {
         if (uniTimes == null) {
-            List<String> lines = readLines(DATA.resolve("hawkes_uni.csv"));
-            uniTimes = lines.stream().skip(1).map(String::strip).filter(s -> !s.isEmpty())
-                    .mapToDouble(Double::parseDouble).toArray();
+            uniTimes = Hawkes.readTimesCsv(DATA.resolve("hawkes_uni.csv"));
         }
         return uniTimes;
     }
@@ -106,26 +104,9 @@ final class TestData {
 
     private static void loadBiv() {
         if (bivTimes == null) {
-            List<String> lines = readLines(DATA.resolve("hawkes_biv.csv"));
-            int n = 0;
-            for (int i = 1; i < lines.size(); i++) {
-                if (!lines.get(i).strip().isEmpty()) {
-                    n++;
-                }
-            }
-            bivTimes = new double[n];
-            bivTypes = new int[n];
-            int r = 0;
-            for (int i = 1; i < lines.size(); i++) {
-                String line = lines.get(i).strip();
-                if (line.isEmpty()) {
-                    continue;
-                }
-                String[] parts = line.split(",");
-                bivTimes[r] = Double.parseDouble(parts[0]);
-                bivTypes[r] = Integer.parseInt(parts[1]);
-                r++;
-            }
+            Hawkes.BivSample sample = Hawkes.readMarkedTimesCsv(DATA.resolve("hawkes_biv.csv"));
+            bivTimes = sample.times();
+            bivTypes = sample.types();
         }
     }
 
@@ -196,11 +177,4 @@ final class TestData {
         }
     }
 
-    private static List<String> readLines(Path p) {
-        try {
-            return Files.readAllLines(p);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
 }

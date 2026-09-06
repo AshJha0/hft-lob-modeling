@@ -79,4 +79,29 @@ TEST(Ks, ValidationErrors) {
     EXPECT_THROW(lobmod::ks_pvalue(0.5, -3), std::invalid_argument);
 }
 
+// ------------------------------------------------------------ review additions
+
+TEST(Ks, PvalueSmallLambdaAccuracy) {
+    // PT-10: the dual series makes tiny statistics give p = 1, not 0.87
+    EXPECT_NEAR(lobmod::ks_pvalue(1e-4, 100), 1.0, 1e-9);
+    const long long n = 100000;
+    EXPECT_GE(lobmod::ks_pvalue(0.5 / static_cast<double>(n), n), 0.999);
+    double prev = 1.0;
+    for (double d : {0.5 / n, 2.0 / n, 8.0 / n, 32.0 / n, 128.0 / n, 512.0 / n}) {
+        const double p = lobmod::ks_pvalue(d, n);
+        EXPECT_LE(p, prev + 1e-15); // monotone across the branch switch
+        prev = p;
+    }
+    EXPECT_DOUBLE_EQ(lobmod::kolmogorov_q(0.01), 1.0);
+    EXPECT_DOUBLE_EQ(lobmod::kolmogorov_q(0.005), 1.0);
+    // continuity at the pinned switch point (both branches are exact here)
+    EXPECT_NEAR(lobmod::kolmogorov_q(0.0999), 1.0, 1e-14);
+    EXPECT_NEAR(lobmod::kolmogorov_q(0.1), 1.0, 1e-14);
+    EXPECT_NEAR(lobmod::kolmogorov_q(0.1001), 1.0, 1e-14);
+    // reference values (scipy.special.kolmogorov)
+    EXPECT_NEAR(lobmod::kolmogorov_q(0.5), 0.963945243664875, 1e-14);
+    EXPECT_NEAR(lobmod::kolmogorov_q(1.0), 0.269999671677355, 1e-14);
+    EXPECT_NEAR(lobmod::kolmogorov_q(2.0), 0.000670925255780, 1e-14);
+}
+
 } // namespace

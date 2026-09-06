@@ -1,6 +1,6 @@
 [package]
 name = "lobmod"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "High-frequency limit-order-book modeling: LOB simulator, Hawkes processes, deterministic MLP"
 
@@ -9,6 +9,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # The golden pipeline trains an 800-epoch full-batch MLP; unoptimized debug
-# builds are too slow for the <90s test budget, so tests/demo build with -O2.
+# builds are far too slow for it, so tests/demo build with -O2 even in dev.
 [profile.dev]
 opt-level = 2

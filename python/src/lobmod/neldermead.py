@@ -1,4 +1,4 @@
-"""Native Nelder-Mead simplex minimizer (P02-pinned configuration).
+"""Native Nelder-Mead simplex minimizer (pinned scipy-compatible configuration).
 
 Deterministic, derivative-free minimization of ``f: R^n -> float``.  The
 configuration is pinned so every language reproduces the same iterates:
@@ -22,6 +22,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from typing import Callable, List, Sequence
+
+from ._validate import as_int
 
 
 @dataclass(frozen=True)
@@ -59,8 +61,11 @@ def nelder_mead(
         raise ValueError("x0 must be non-empty")
     if any(not math.isfinite(v) for v in x0):
         raise ValueError("x0 must be finite")
-    if not (xatol > 0.0 and fatol > 0.0 and maxiter >= 1):
-        raise ValueError("tolerances must be positive and maxiter >= 1")
+    if not (math.isfinite(xatol) and math.isfinite(fatol) and xatol > 0.0 and fatol > 0.0):
+        raise ValueError("tolerances must be positive and finite")
+    maxiter = as_int("maxiter", maxiter)
+    if maxiter < 1:
+        raise ValueError("maxiter must be an integer >= 1")
 
     # initial simplex (scipy rule)
     simplex: List[List[float]] = [list(x0)]

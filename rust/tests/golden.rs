@@ -6,7 +6,7 @@ mod common;
 
 use std::sync::OnceLock;
 
-use common::{check_case, load_golden, read_hawkes_csv};
+use common::{check_case, load_golden};
 use lobmod::{
     accuracy, biv_loglik, chronological_split, compute_features, fit_biv, fit_uni, ks_test_exp,
     load_feature_config, majority_class, ofi_at, read_events_csv, replay, signal_pnl,
@@ -21,13 +21,13 @@ fn states() -> &'static BookStates {
     static STATES: OnceLock<BookStates> = OnceLock::new();
     STATES.get_or_init(|| {
         let events = read_events_csv(&common::data_path("lob_events.csv")).expect("events");
-        replay(&events, 3, 1.0).expect("replay")
+        replay(&events, 3).expect("replay")
     })
 }
 
 fn uni_times() -> &'static Vec<f64> {
     static TIMES: OnceLock<Vec<f64>> = OnceLock::new();
-    TIMES.get_or_init(|| read_hawkes_csv("hawkes_uni.csv").0)
+    TIMES.get_or_init(common::uni_times)
 }
 
 fn uni_fit() -> &'static HawkesUniFit {
@@ -37,7 +37,7 @@ fn uni_fit() -> &'static HawkesUniFit {
 
 fn biv_data() -> &'static (Vec<f64>, Vec<usize>) {
     static DATA: OnceLock<(Vec<f64>, Vec<usize>)> = OnceLock::new();
-    DATA.get_or_init(|| read_hawkes_csv("hawkes_biv.csv"))
+    DATA.get_or_init(common::biv_data)
 }
 
 fn biv_fit() -> &'static HawkesBivFit {
@@ -67,8 +67,8 @@ fn pipeline() -> &'static Pipeline {
         let cfg = load_feature_config(&common::data_path("features_config.json")).expect("config");
         let fs = compute_features(states(), &cfg).expect("features");
         let (tr, te) = chronological_split(fs.len(), cfg.train_frac).expect("split");
-        let x_train_raw = fs.x.slice_rows(tr.start, tr.end);
-        let x_test_raw = fs.x.slice_rows(te.start, te.end);
+        let x_train_raw = fs.x.slice_rows(tr.start, tr.end).expect("rows");
+        let x_test_raw = fs.x.slice_rows(te.start, te.end).expect("rows");
         let mut std = Standardizer::new();
         std.fit(&x_train_raw).expect("fit standardizer");
         let x_train = std.transform(&x_train_raw).expect("transform train");

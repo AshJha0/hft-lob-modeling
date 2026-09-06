@@ -2,7 +2,10 @@
 //! deterministic neural network.  Not a general linear-algebra library — just
 //! the storage plus the accessors the pinned algorithms need, with all inner
 //! loops written out explicitly so the floating-point evaluation order is
-//! under our control.
+//! under our control.  Public constructors validate their arguments and
+//! return [`Result`] — this module never panics on caller input.
+
+use crate::error::{LobError, Result};
 
 /// Row-major `rows x cols` matrix of `f64`.
 #[derive(Debug, Clone, PartialEq)]
@@ -22,11 +25,18 @@ impl Matrix {
         }
     }
 
-    /// Build from a flat row-major buffer; panics if the length mismatches
-    /// (an internal invariant, not an input-validation path).
-    pub fn from_vec(rows: usize, cols: usize, data: Vec<f64>) -> Self {
-        assert_eq!(data.len(), rows * cols, "matrix buffer length mismatch");
-        Self { rows, cols, data }
+    /// Build from a flat row-major buffer.
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if `data.len() != rows * cols`.
+    pub fn from_vec(rows: usize, cols: usize, data: Vec<f64>) -> Result<Self> {
+        if data.len() != rows * cols {
+            return Err(LobError::InvalidInput(format!(
+                "matrix buffer length {} does not match {rows} x {cols}",
+                data.len()
+            )));
+        }
+        Ok(Self { rows, cols, data })
     }
 
     /// Number of rows.
@@ -74,13 +84,21 @@ impl Matrix {
     }
 
     /// Copy of the row range `[start, end)` as a new matrix.
-    pub fn slice_rows(&self, start: usize, end: usize) -> Matrix {
-        assert!(start <= end && end <= self.rows, "row range out of bounds");
-        Matrix {
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] unless `start <= end <= rows`.
+    pub fn slice_rows(&self, start: usize, end: usize) -> Result<Matrix> {
+        if !(start <= end && end <= self.rows) {
+            return Err(LobError::InvalidInput(format!(
+                "row range [{start}, {end}) out of bounds for {} rows",
+                self.rows
+            )));
+        }
+        Ok(Matrix {
             rows: end - start,
             cols: self.cols,
             data: self.data[start * self.cols..end * self.cols].to_vec(),
-        }
+        })
     }
 
     /// True if every element is finite.

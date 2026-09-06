@@ -16,8 +16,12 @@ import java.util.Arrays;
  *       (Numerical Recipes pinned form):
  *       {@code lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * D} and the
  *       Kolmogorov tail series
- *       {@code 2 * sum_(j=1..100) (-1)^(j-1) exp(-2 j^2 lambda^2)}, clipped
- *       to [0, 1]. The series is pinned at exactly 100 terms.</li>
+ *       {@code 2 * sum_(j=1..100) (-1)^(j-1) exp(-2 j^2 lambda^2)} for
+ *       {@code lambda >= 0.1}, or the dual form
+ *       {@code 1 - (sqrt(2 pi)/lambda) sum_(j=1..100) exp(-(2j-1)^2 pi^2 /
+ *       (8 lambda^2))} for {@code lambda < 0.1} (where the alternating
+ *       series converges too slowly), clipped to [0, 1]. Both branches are
+ *       pinned at exactly 100 terms.</li>
  * </ul>
  *
  * <p>With very small n the asymptotic p-value is only indicative — callers
@@ -67,8 +71,8 @@ public final class Gof {
 
     /**
      * Asymptotic Kolmogorov p-value for statistic {@code d} on {@code n}
-     * points (pinned Stephens-corrected 100-term series, clipped to [0, 1];
-     * exactly 1 when {@code d = 0}).
+     * points (Stephens correction, then {@link #kolmogorovQ}; exactly 1 when
+     * {@code d = 0}).
      *
      * @throws IllegalArgumentException if {@code d} is outside [0, 1] or
      *     {@code n} is not positive
@@ -85,12 +89,34 @@ public final class Gof {
         }
         double sqrtN = Math.sqrt(n);
         double lam = (sqrtN + 0.12 + 0.11 / sqrtN) * d;
-        double total = 0.0;
-        for (int j = 1; j <= 100; j++) {
-            double term = Math.exp(-2.0 * j * j * lam * lam);
-            total += j % 2 == 1 ? term : -term;
+        return kolmogorovQ(lam);
+    }
+
+    /**
+     * Kolmogorov tail probability {@code Q(lambda)} by the pinned two-branch
+     * evaluation: the 100-term alternating series for {@code lambda >= 0.1},
+     * the 100-term dual (Jacobi theta) form
+     * {@code 1 - (sqrt(2 pi)/lambda) sum exp(-(2j-1)^2 pi^2 / (8 lambda^2))}
+     * below it (Numerical Recipes eq. 14.3.20), clipped to [0, 1].
+     */
+    public static double kolmogorovQ(double lam) {
+        final int terms = 100; // pinned in both branches
+        double p;
+        if (lam < 0.1) {
+            double total = 0.0;
+            for (int j = 1; j <= terms; j++) {
+                double m = 2.0 * j - 1.0;
+                total += Math.exp(-(m * m) * Math.PI * Math.PI / (8.0 * lam * lam));
+            }
+            p = 1.0 - (Math.sqrt(2.0 * Math.PI) / lam) * total;
+        } else {
+            double total = 0.0;
+            for (int j = 1; j <= terms; j++) {
+                double term = Math.exp(-2.0 * j * j * lam * lam);
+                total += j % 2 == 1 ? term : -term;
+            }
+            p = 2.0 * total;
         }
-        double p = 2.0 * total;
         return Math.min(1.0, Math.max(0.0, p));
     }
 

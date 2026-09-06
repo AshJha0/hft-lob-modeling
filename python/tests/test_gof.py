@@ -61,3 +61,25 @@ def test_ks_validation():
         lm.ks_pvalue(1.5, 10)
     with pytest.raises(ValueError, match="n must be"):
         lm.ks_pvalue(0.1, 0)
+
+
+# ----------------------------------------------------------- review additions
+
+def test_ks_pvalue_small_lambda_accuracy():
+    """PT-10: the dual series makes tiny statistics give p = 1, not 0.87."""
+    assert abs(lm.ks_pvalue(1e-4, 100) - 1.0) < 1e-9
+    n = 100_000
+    assert lm.ks_pvalue(0.5 / n, n) >= 0.999
+    ds = [0.5 / n, 2.0 / n, 8.0 / n, 32.0 / n, 128.0 / n, 512.0 / n]
+    ps = [lm.ks_pvalue(d, n) for d in ds]
+    assert all(a >= b for a, b in zip(ps, ps[1:]))  # monotone across the branch switch
+    from lobmod.gof import _kolmogorov_q
+    # lambda = 0.01 was 0.867 with the 100-term alternating series alone
+    assert _kolmogorov_q(0.01) == 1.0
+    assert _kolmogorov_q(0.005) == 1.0
+    # continuity at the pinned switch point, checked against scipy
+    from scipy.special import kolmogorov
+    for lam in (0.02, 0.05, 0.0999, 0.1, 0.1001, 0.3):
+        assert _kolmogorov_q(lam) == pytest.approx(float(kolmogorov(lam)), abs=1e-14)
+    with pytest.raises(ValueError, match="n must be"):
+        lm.ks_pvalue(0.1, 2.5)

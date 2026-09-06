@@ -50,6 +50,8 @@ from typing import List, Sequence, Tuple
 
 import numpy as np
 
+from ._validate import as_positive_int, is_integer
+
 _STD_FLOOR = 1e-12
 _LOG_FLOOR = 1e-300
 
@@ -102,11 +104,24 @@ def _check_matrix(X: np.ndarray) -> np.ndarray:
     return X
 
 
+def _as_int_labels(y: np.ndarray, name: str = "labels") -> np.ndarray:
+    """Cast to ``int`` only if every entry is integral (no silent truncation)."""
+    y = np.asarray(y)
+    if y.dtype == np.bool_:
+        raise ValueError(f"{name} must be integers, got booleans")
+    if not np.issubdtype(y.dtype, np.integer):
+        yf = np.asarray(y, dtype=float)
+        if not np.all(np.isfinite(yf)) or np.any(yf != np.floor(yf)):
+            raise ValueError(f"{name} must be integers")
+        return yf.astype(int)
+    return y.astype(int)
+
+
 def _check_labels(y: np.ndarray, n_rows: int, n_classes: int) -> np.ndarray:
     y = np.asarray(y)
     if y.shape != (n_rows,):
         raise ValueError(f"y must have shape ({n_rows},), got {y.shape}")
-    y = y.astype(int)
+    y = _as_int_labels(y)
     if np.any((y < 0) | (y >= n_classes)):
         raise ValueError(f"labels must be in [0, {n_classes})")
     return y
@@ -129,9 +144,9 @@ class MLP:
     """
 
     def __init__(self, n_inputs: int, hidden: Sequence[int], n_classes: int) -> None:
-        if n_inputs <= 0 or n_classes < 2:
+        if not is_integer(n_inputs) or not is_integer(n_classes) or n_inputs <= 0 or n_classes < 2:
             raise ValueError("n_inputs must be positive and n_classes >= 2")
-        if any((not isinstance(h, int)) or isinstance(h, bool) or h <= 0 for h in hidden):
+        if any((not is_integer(h)) or int(h) <= 0 for h in hidden):
             raise ValueError(f"hidden sizes must be positive integers, got {hidden}")
         sizes = [int(n_inputs), *[int(h) for h in hidden], int(n_classes)]
         self.sizes = sizes
@@ -220,8 +235,7 @@ class MLP:
         """
         if not (math.isfinite(learning_rate) and learning_rate > 0.0):
             raise ValueError(f"learning_rate must be positive, got {learning_rate}")
-        if not isinstance(epochs, int) or isinstance(epochs, bool) or epochs <= 0:
-            raise ValueError(f"epochs must be a positive integer, got {epochs}")
+        epochs = as_positive_int("epochs", epochs)
         X = _check_matrix(X)
         y = _check_labels(y, X.shape[0], self.sizes[-1])
         history: List[float] = []
@@ -260,7 +274,7 @@ def majority_class(y: np.ndarray) -> int:
     y = np.asarray(y)
     if y.ndim != 1 or y.size == 0:
         raise ValueError("y must be a non-empty 1-D array")
-    values, counts = np.unique(y.astype(int), return_counts=True)
+    values, counts = np.unique(_as_int_labels(y), return_counts=True)
     return int(values[np.argmax(counts)])
 
 
@@ -270,20 +284,30 @@ def signal_pnl(
     """PnL of trading the predicted direction with half-spread costs.
 
     Position per row: +1 for class 2 (up), -1 for class 0 (down), 0 for flat.
-    Gross PnL adds ``pos * fwd_ret`` (mid-to-mid, ticks); net PnL subtracts a
-    half-spread cost ``spread / 2`` per round-trip signal — the honest floor
-    for crossing the spread on entry.  Returns ``(gross, net, n_trades)``.
+    Gross PnL adds ``pos * fwd_ret`` (mid-to-mid, in ticks per unit size);
+    net PnL subtracts a half-spread cost ``spread / 2`` per non-flat signal
+    **on entry only** (the exit is marked at mid, so a genuine round trip
+    that also crosses on exit costs a full spread).  Returns
+    ``(gross, net, n_trades)``.
+
+    This is a *signal diagnostic*, not a tradable strategy: consecutive rows
+    are one event apart while each position is held for ``H`` events, so the
+    positions overlap; there are no fees, latency, fill probability or
+    inventory limits.
 
     Raises:
-        ValueError: mismatched or non-finite inputs.
+        ValueError: mismatched, empty or non-finite inputs, or a label
+            outside ``{0, 1, 2}``.
     """
-    y_pred = np.asarray(y_pred).astype(int)
+    y_pred = _as_int_labels(np.asarray(y_pred), "y_pred")
     fwd_ret = np.asarray(fwd_ret, dtype=float)
     spread = np.asarray(spread, dtype=float)
     if not (y_pred.shape == fwd_ret.shape == spread.shape) or y_pred.ndim != 1:
         raise ValueError("y_pred, fwd_ret, spread must be equal-length 1-D arrays")
     if y_pred.size == 0:
         raise ValueError("empty prediction array")
+    if np.any((y_pred < 0) | (y_pred > 2)):
+        raise ValueError("y_pred labels must be in {0, 1, 2}")
     if not (np.all(np.isfinite(fwd_ret)) and np.all(np.isfinite(spread))):
         raise ValueError("fwd_ret and spread must be finite")
     pos = y_pred - 1  # {0,1,2} -> {-1,0,+1}

@@ -568,12 +568,17 @@ pub fn majority_class(y: &[usize]) -> Result<usize> {
 /// PnL of trading the predicted direction with half-spread costs.
 ///
 /// Position per row: +1 for class 2 (up), -1 for class 0 (down), 0 for flat.
-/// Gross PnL adds `pos * fwd_ret` (mid-to-mid, ticks); net PnL subtracts a
-/// half-spread cost `spread / 2` per non-flat signal — the honest floor for
-/// crossing the spread on entry.  Returns `(gross, net, n_trades)`.
+/// Gross PnL adds `pos * fwd_ret` (mid-to-mid, ticks per unit size); net PnL
+/// subtracts a half-spread cost `spread / 2` per non-flat signal, charged on
+/// entry only (the exit is marked at mid).  Returns `(gross, net, n_trades)`.
+///
+/// This is a signal diagnostic, not a tradable strategy: positions of
+/// consecutive rows overlap (one signal per event, each held `H` events);
+/// no fees, latency or fill probability.
 ///
 /// # Errors
-/// [`LobError::InvalidInput`] on empty, mismatched, or non-finite inputs.
+/// [`LobError::InvalidInput`] on empty, mismatched, or non-finite inputs, or
+/// a label outside `{0, 1, 2}`.
 pub fn signal_pnl(y_pred: &[usize], fwd_ret: &[f64], spread: &[f64]) -> Result<(f64, f64, usize)> {
     if y_pred.is_empty() {
         return Err(LobError::InvalidInput(
@@ -583,6 +588,11 @@ pub fn signal_pnl(y_pred: &[usize], fwd_ret: &[f64], spread: &[f64]) -> Result<(
     if y_pred.len() != fwd_ret.len() || y_pred.len() != spread.len() {
         return Err(LobError::InvalidInput(
             "y_pred, fwd_ret, spread must be equal-length 1-D arrays".to_string(),
+        ));
+    }
+    if y_pred.iter().any(|&v| v > 2) {
+        return Err(LobError::InvalidInput(
+            "y_pred labels must be in {0, 1, 2}".to_string(),
         ));
     }
     if fwd_ret.iter().chain(spread).any(|v| !v.is_finite()) {

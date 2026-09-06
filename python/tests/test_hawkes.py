@@ -1,12 +1,15 @@
 """Hawkes: recursion vs brute force, MLE recovery, residuals, edge cases."""
 
 import math
+import os
 import warnings
 
 import numpy as np
 import pytest
 
 import lobmod as lm
+
+from conftest import DATA_DIR
 
 
 def small_sample():
@@ -191,3 +194,160 @@ def test_nelder_mead_matches_scipy(uni_times, uni_fit, dgp):
     assert uni_fit.mu == pytest.approx(mu, rel=1e-4)
     assert uni_fit.alpha == pytest.approx(a, rel=1e-4)
     assert uni_fit.beta == pytest.approx(b, rel=1e-4)
+
+
+# ----------------------------------------------------------- review additions
+
+def test_fit_objectives_are_pure_under_underflow(biv_data, uni_times):
+    """PT-6: exp underflow of mu/beta must return the 1e10 penalty, never raise."""
+    t, k = biv_data
+    obj = lm.biv_fit_objective(t, k, 600.0)
+    assert obj([-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0]) == 1e10
+    assert obj([-800.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) == 1e10   # mu0 underflow only
+    assert obj([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -800.0]) == 1e10   # beta underflow only
+    assert obj([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 800.0]) == 1e10    # exp overflow
+    x0 = [math.log(0.5 * 323 / 600.0), math.log(0.5 * 288 / 600.0)] + [math.log(0.25)] * 4 + [0.0]
+    assert obj(x0) == pytest.approx(-lm.biv_loglik(t, k, 600.0, [0.5 * 323 / 600.0, 0.5 * 288 / 600.0],
+                                                    [[0.25, 0.25], [0.25, 0.25]], 1.0))
+    # driving Nelder-Mead through the underflow region is harmless
+    res = lm.nelder_mead(obj, [-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0], maxiter=5)
+    assert math.isfinite(res.fval)
+    uobj = lm.uni_fit_objective(uni_times, 1000.0)
+    assert uobj([-800.0, 0.0, 0.0]) == 1e10 and uobj([0.0, 0.0, -800.0]) == 1e10
+    assert uobj([0.0, -800.0, 0.0]) == pytest.approx(-lm.uni_loglik(uni_times, 1000.0, 1.0, 0.0, 1.0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        capped = lm.fit_biv(t, k, 600.0, maxiter=1)
+        capped_u = lm.fit_uni(uni_times, 1000.0, maxiter=1)
+    assert capped.converged is False and capped.n_iter == 2   # two stages x 1 iteration
+    assert capped_u.converged is False and capped_u.n_iter == 1
+    with pytest.raises(ValueError, match="maxiter"):
+        lm.fit_uni(uni_times, 1000.0, maxiter=0)
+
+
+def test_bundled_streams_regenerate_bitwise(events, uni_times, biv_data, dgp):
+    """PT-7: every bundled dataset is exactly its pinned generator output."""
+    assert lm.generate_events(5000, 20240613) == events
+    u = dgp["hawkes_uni"]
+    sim = lm.simulate_uni(u["mu"], u["alpha"], u["beta"], u["T"], u["seed"])
+    assert sim.size == 1211 and np.array_equal(sim, uni_times)
+    b = dgp["hawkes_biv"]
+    t, k = biv_data
+    st, sk = lm.simulate_biv(b["mu"], b["alpha"], b["beta"], b["T"], b["seed"])
+    assert st.size == 611 and np.array_equal(st, t) and np.array_equal(sk, k)
+
+
+def test_poisson_limit_of_fit():
+    """PT-8: alpha = 0 is a homogeneous Poisson process; the MLE must find it."""
+    t = lm.simulate_uni(1.0, 0.0, 1.0, 2000.0, 5)
+    assert t.size > 1500
+    T = 2000.0
+    fit = lm.fit_uni(t, T)
+    assert fit.converged
+    assert fit.branching < 0.05
+    poisson_ll = lm.uni_loglik(t, T, t.size / T, 0.0, 1.0)  # Poisson MLE mu = N/T
+    assert fit.loglik >= poisson_ll - 1e-6
+    assert poisson_ll == pytest.approx(t.size * math.log(t.size / T) - t.size, abs=1e-9)
+    # with alpha = 0 the likelihood does not depend on beta at all
+    assert lm.uni_loglik(t, T, 0.7, 0.0, 1.0) == lm.uni_loglik(t, T, 0.7, 0.0, 3.3)
+
+
+def test_single_event_paths():
+    """PT-9: N = 1 and t_N = T boundaries."""
+    mu, alpha, beta = 0.5, 0.8, 1.5
+    t = np.array([0.7])
+    expected = math.log(mu) - mu * 1.0 + (alpha / beta) * math.expm1(-beta * 0.3)
+    assert lm.uni_loglik(t, 1.0, mu, alpha, beta) == pytest.approx(expected, abs=1e-15)
+    assert lm.uni_loglik_brute(t, 1.0, mu, alpha, beta) == pytest.approx(expected, abs=1e-15)
+    tau = lm.uni_residuals(t, 1.0, mu, alpha, beta)
+    assert tau.shape == (1,) and tau[0] == pytest.approx(mu * 0.7)  # Lambda(t_1) = mu t_1
+    d, p = lm.ks_test_exp(tau)
+    assert 0.0 < d < 1.0 and 0.0 < p <= 1.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit = lm.fit_uni(t, 1.0)
+    assert math.isfinite(fit.loglik) and fit.mu > 0.0 and fit.n_iter >= 1
+    # event exactly at the horizon: expm1(0) = 0
+    tT = np.array([1.0])
+    assert lm.uni_loglik(tT, 1.0, mu, alpha, beta) == pytest.approx(math.log(mu) - mu)
+    assert lm.uni_residuals(tT, 1.0, mu, alpha, beta)[0] == pytest.approx(mu)
+    kT = np.array([0])
+    with pytest.raises(ValueError, match="both event types"):
+        lm.fit_biv(tT, kT, 1.0)
+    ll = lm.biv_loglik(tT, kT, 1.0, [0.2, 0.3], [[0.1, 0.1], [0.1, 0.1]], 2.0)
+    assert ll == pytest.approx(math.log(0.2) - 0.5)
+
+
+def test_simulation_candidate_cap(monkeypatch):
+    import lobmod.hawkes as H
+    monkeypatch.setattr(H, "MAX_CANDIDATES", 3)
+    with pytest.raises(ValueError, match="MAX_CANDIDATES"):
+        lm.simulate_uni(0.5, 0.2, 1.0, 100.0, 1)
+    with pytest.raises(ValueError, match="MAX_CANDIDATES"):
+        lm.simulate_biv([0.3, 0.3], [[0.1, 0.0], [0.0, 0.1]], 1.0, 100.0, 1)
+    monkeypatch.setattr(H, "MAX_CANDIDATES", 50_000_000)
+    assert lm.simulate_uni(0.5, 0.2, 1.0, 10.0, 1).size > 0
+
+
+def test_types_must_be_integral(uni_times):
+    t = uni_times[:4]
+    with pytest.raises(ValueError, match="types"):
+        lm.biv_loglik(t, [0.9, 1.2, 0.0, 1.0], 1000.0, [0.3, 0.3], [[0.1, 0.1], [0.1, 0.1]], 1.0)
+    with pytest.raises(ValueError, match="types"):
+        lm.biv_loglik(t, [True, False, True, False], 1000.0, [0.3, 0.3], [[0.1, 0.1], [0.1, 0.1]], 1.0)
+    # exact-integer floats are fine
+    a = lm.biv_loglik(t, [0.0, 1.0, 0.0, 1.0], 1000.0, [0.3, 0.3], [[0.1, 0.1], [0.1, 0.1]], 1.0)
+    b = lm.biv_loglik(t, [0, 1, 0, 1], 1000.0, [0.3, 0.3], [[0.1, 0.1], [0.1, 0.1]], 1.0)
+    assert a == b
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_bytes(text.encode())
+    return str(p)
+
+
+def test_times_csv_round_trip_and_robustness(tmp_path, uni_times, biv_data):
+    p = str(tmp_path / "u.csv")
+    lm.write_times_csv(p, uni_times)
+    assert np.array_equal(lm.read_times_csv(p), uni_times)
+    with open(p, "rb") as fh, open(os.path.join(DATA_DIR, "hawkes_uni.csv"), "rb") as ref:
+        assert fh.read() == ref.read()  # %.17g: byte-identical to the bundled file
+    t, k = biv_data
+    q = str(tmp_path / "b.csv")
+    lm.write_marked_times_csv(q, t, k)
+    rt, rk = lm.read_marked_times_csv(q)
+    assert np.array_equal(rt, t) and np.array_equal(rk, k)
+    with open(q, "rb") as fh, open(os.path.join(DATA_DIR, "hawkes_biv.csv"), "rb") as ref:
+        assert fh.read() == ref.read()
+    # robustness: CRLF and trailing blank lines accepted, everything else rejected
+    body = "t\n0.5\n1.25e0\n"
+    assert lm.read_times_csv(_write(tmp_path, "crlf.csv", body.replace("\n", "\r\n"))).tolist() == [0.5, 1.25]
+    assert lm.read_times_csv(_write(tmp_path, "trail.csv", body + "\n")).tolist() == [0.5, 1.25]
+    for name, text in {
+        "nan.csv": body + "nan\n",
+        "inf.csv": body + "inf\n",
+        "two.csv": body + "1.5,0\n",
+        "word.csv": body + "abc\n",
+        "hdr.csv": "time\n0.5\n",
+        "blank.csv": "t\n0.5\n\n1.0\n",
+        "space.csv": "t\n 0.5\n",
+    }.items():
+        with pytest.raises(ValueError):
+            lm.read_times_csv(_write(tmp_path, name, text))
+    mbody = "t,type\n0.5,0\n1.0,1\n"
+    rt, rk = lm.read_marked_times_csv(_write(tmp_path, "m.csv", mbody))
+    assert rt.tolist() == [0.5, 1.0] and rk.tolist() == [0, 1]
+    for name, text in {
+        "type2.csv": mbody + "1.5,2\n",
+        "typef.csv": mbody + "1.5,1.0\n",
+        "one.csv": mbody + "1.5\n",
+        "three.csv": mbody + "1.5,1,\n",
+        "hdr.csv": "type,t\n0,0.5\n",
+    }.items():
+        with pytest.raises(ValueError):
+            lm.read_marked_times_csv(_write(tmp_path, name, text))
+    with pytest.raises(ValueError, match="finite"):
+        lm.write_times_csv(str(tmp_path / "x.csv"), [1.0, math.nan])
+    with pytest.raises(ValueError, match="types"):
+        lm.write_marked_times_csv(str(tmp_path / "y.csv"), [1.0, 2.0], [0, 2])
