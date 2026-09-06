@@ -8,13 +8,13 @@
 //!
 //! Run:  cd rust && cargo run --bin demo
 
-use std::fs;
 use std::process::ExitCode;
 
 use lobmod::{
     accuracy, apply_event, biv_residuals, chronological_split, compute_features, confusion_matrix,
-    fit_biv, fit_uni, ks_test_exp, load_feature_config, majority_class, read_events_csv, replay,
-    signal_pnl, uni_residuals, EventType, LimitOrderBook, LobError, Mlp, Standardizer,
+    fit_biv, fit_uni, ks_test_exp, load_feature_config, majority_class, read_events_csv,
+    read_marked_times_csv, read_times_csv, replay, signal_pnl, uni_residuals, EventType,
+    LimitOrderBook, LobError, Mlp, Standardizer,
 };
 
 const LINE: &str =
@@ -22,31 +22,6 @@ const LINE: &str =
 
 fn section(title: &str) {
     println!("\n{LINE}\n{title}\n{LINE}");
-}
-
-/// Read a one-column (`t`) or two-column (`t,type`) Hawkes CSV.
-fn read_hawkes_csv(path: &str) -> Result<(Vec<f64>, Vec<usize>), LobError> {
-    let text = fs::read_to_string(path).map_err(|e| LobError::Io(format!("{path}: {e}")))?;
-    let mut times = Vec::new();
-    let mut types = Vec::new();
-    for line in text.lines().skip(1) {
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.split(',');
-        let t: f64 = parts
-            .next()
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| LobError::Parse(format!("bad row in {path}: {line:?}")))?;
-        times.push(t);
-        if let Some(k) = parts.next() {
-            let k: usize = k
-                .parse()
-                .map_err(|_| LobError::Parse(format!("bad type in {path}: {line:?}")))?;
-            types.push(k);
-        }
-    }
-    Ok((times, types))
 }
 
 fn run() -> Result<(), LobError> {
@@ -57,7 +32,7 @@ fn run() -> Result<(), LobError> {
     section("1. Limit order book replay (data/lob_events.csv)");
     let events = read_events_csv(&format!("{data}/lob_events.csv"))?;
     let cfg = load_feature_config(&format!("{data}/features_config.json"))?;
-    let states = replay(&events, cfg.depth_k, 1.0)?;
+    let states = replay(&events, cfg.depth_k)?;
     let mut book = LimitOrderBook::new(1.0)?;
     for e in &events {
         apply_event(&mut book, e)?;
@@ -101,7 +76,7 @@ fn run() -> Result<(), LobError> {
 
     // ---------------------------------------------------------- Hawkes univariate
     section("2. Univariate Hawkes fit (data/hawkes_uni.csv)");
-    let (t_uni, _) = read_hawkes_csv(&format!("{data}/hawkes_uni.csv"))?;
+    let t_uni = read_times_csv(&format!("{data}/hawkes_uni.csv"))?;
     let t_horizon_uni = 1000.0;
     let fit_u = fit_uni(&t_uni, t_horizon_uni)?;
     let gaps: Vec<f64> = t_uni.windows(2).map(|w| w[1] - w[0]).collect();
@@ -144,7 +119,7 @@ fn run() -> Result<(), LobError> {
 
     // ---------------------------------------------------------- Hawkes bivariate
     section("4. Bivariate Hawkes: buy/sell market-order cross-excitation");
-    let (t_biv, k_biv) = read_hawkes_csv(&format!("{data}/hawkes_biv.csv"))?;
+    let (t_biv, k_biv) = read_marked_times_csv(&format!("{data}/hawkes_biv.csv"))?;
     let t_horizon_biv = 600.0;
     let fit_b = fit_biv(&t_biv, &k_biv, t_horizon_biv)?;
     let n_buy = k_biv.iter().filter(|&&k| k == 0).count();
@@ -185,8 +160,8 @@ fn run() -> Result<(), LobError> {
     section("5. Direction prediction: MLP vs logistic vs majority");
     let fs = compute_features(&states, &cfg)?;
     let (tr, te) = chronological_split(fs.len(), cfg.train_frac)?;
-    let x_train_raw = fs.x.slice_rows(tr.start, tr.end);
-    let x_test_raw = fs.x.slice_rows(te.start, te.end);
+    let x_train_raw = fs.x.slice_rows(tr.start, tr.end)?;
+    let x_test_raw = fs.x.slice_rows(te.start, te.end)?;
     let mut std = Standardizer::new();
     std.fit(&x_train_raw)?;
     let x_tr = std.transform(&x_train_raw)?;

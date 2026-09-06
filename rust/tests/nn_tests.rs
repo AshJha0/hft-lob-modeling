@@ -96,7 +96,7 @@ fn softmax_rows_sum_to_one() {
         assert!(p.row(r).iter().all(|&v| v >= 0.0));
     }
     // softmax is shift-invariant and handles large logits (max-shift pinned)
-    let z = Matrix::from_vec(1, 3, vec![1000.0, 1001.0, 1002.0]);
+    let z = Matrix::from_vec(1, 3, vec![1000.0, 1001.0, 1002.0]).unwrap();
     let s = softmax(&z);
     let total: f64 = s.row(0).iter().sum();
     assert!((total - 1.0).abs() < 1e-12);
@@ -135,7 +135,7 @@ fn degenerate_one_class_labels_train_and_lose_to_majority() {
 
 #[test]
 fn standardizer_pinned_moments() {
-    let x = Matrix::from_vec(4, 2, vec![1.0, 10.0, 2.0, 10.0, 3.0, 10.0, 4.0, 10.0]);
+    let x = Matrix::from_vec(4, 2, vec![1.0, 10.0, 2.0, 10.0, 3.0, 10.0, 4.0, 10.0]).unwrap();
     let mut s = Standardizer::new();
     s.fit(&x).unwrap();
     let t = s.transform(&x).unwrap();
@@ -236,4 +236,66 @@ fn nelder_mead_iteration_cap_and_errors() {
     assert!(nelder_mead(|_| 0.0, &[f64::NAN], 1e-8, 1e-10, 100).is_err());
     assert!(nelder_mead(|x| x[0], &[1.0], 0.0, 1e-10, 100).is_err());
     assert!(nelder_mead(|x| x[0], &[1.0], 1e-8, 1e-10, 0).is_err());
+}
+
+// ---------------------------------------------------------------- review additions
+
+#[test]
+fn signal_pnl_rejects_invalid_labels() {
+    // PT-5
+    assert!(signal_pnl(&[3], &[1.0], &[1.0]).is_err());
+    assert!(signal_pnl(&[usize::MAX], &[1.0], &[1.0]).is_err());
+    let (gross, net, n) = signal_pnl(&[2, 0, 1], &[1.0, -2.0, 5.0], &[1.0, 1.0, 1.0]).unwrap();
+    assert_eq!((gross, net, n), (3.0, 2.0, 2));
+}
+
+fn fd_worst(net: &Mlp, x: &Matrix, y: &[usize]) -> f64 {
+    let (_, grads_w, grads_b) = net.loss_and_grads(x, y).unwrap();
+    let h = 1e-6;
+    let mut worst: f64 = 0.0;
+    for l in 0..net.weights().len() {
+        let (rows, cols) = (net.weights()[l].rows(), net.weights()[l].cols());
+        for r in 0..rows {
+            for c in 0..cols {
+                let mut plus = net.clone();
+                let mut minus = net.clone();
+                let w = net.weights()[l].get(r, c);
+                plus.weights_mut()[l].set(r, c, w + h);
+                minus.weights_mut()[l].set(r, c, w - h);
+                let fd = (plus.loss(x, y).unwrap() - minus.loss(x, y).unwrap()) / (2.0 * h);
+                let an = grads_w[l].get(r, c);
+                worst = worst.max((fd - an).abs() / fd.abs().max(an.abs()).max(1.0));
+            }
+        }
+        for j in 0..net.biases()[l].len() {
+            let mut plus = net.clone();
+            let mut minus = net.clone();
+            plus.biases_mut()[l][j] += h;
+            minus.biases_mut()[l][j] -= h;
+            let fd = (plus.loss(x, y).unwrap() - minus.loss(x, y).unwrap()) / (2.0 * h);
+            let an = grads_b[l][j];
+            worst = worst.max((fd - an).abs() / fd.abs().max(an.abs()).max(1.0));
+        }
+    }
+    worst
+}
+
+#[test]
+fn gradient_check_logistic_head_and_two_class_net() {
+    // PT-14: the l == 0 early exit of backprop (no hidden layer) and a 2-class head
+    let (x, y) = toy_data();
+    let logistic = Mlp::new(3, &[], 3).unwrap();
+    assert!(fd_worst(&logistic, &x, &y) < 1e-6);
+    let y2: Vec<usize> = y.iter().map(|&v| usize::from(v > 0)).collect();
+    let two = Mlp::new(3, &[3], 2).unwrap();
+    assert!(fd_worst(&two, &x, &y2) < 1e-6);
+}
+
+#[test]
+fn matrix_constructors_never_panic() {
+    assert!(Matrix::from_vec(2, 2, vec![1.0, 2.0, 3.0]).is_err());
+    let m = Matrix::from_vec(2, 2, vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+    assert!(m.slice_rows(1, 3).is_err());
+    assert!(m.slice_rows(2, 1).is_err());
+    assert_eq!(m.slice_rows(1, 2).unwrap().row(0), &[3.0, 4.0]);
 }

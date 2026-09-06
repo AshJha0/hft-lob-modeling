@@ -7,8 +7,6 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -29,35 +27,6 @@ const std::string kData = LOBMOD_DATA_DIR;
 void section(const std::string& title) {
     const std::string line(68, '-');
     std::printf("\n%s\n%s\n%s\n", line.c_str(), title.c_str(), line.c_str());
-}
-
-std::vector<double> load_uni_times(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw std::runtime_error("cannot open " + path);
-    std::string line;
-    std::getline(in, line); // header "t"
-    std::vector<double> t;
-    while (std::getline(in, line)) {
-        if (!line.empty()) t.push_back(std::stod(line));
-    }
-    return t;
-}
-
-std::pair<std::vector<double>, std::vector<int>>
-load_biv_times(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) throw std::runtime_error("cannot open " + path);
-    std::string line;
-    std::getline(in, line); // header "t,type"
-    std::vector<double> t;
-    std::vector<int> k;
-    while (std::getline(in, line)) {
-        if (line.empty()) continue;
-        const std::size_t comma = line.find(',');
-        t.push_back(std::stod(line.substr(0, comma)));
-        k.push_back(std::stoi(line.substr(comma + 1)));
-    }
-    return {t, k};
 }
 
 } // namespace
@@ -113,7 +82,7 @@ int main() {
 
     // -------------------------------------------------------- Hawkes univariate
     section("2. Univariate Hawkes fit (data/hawkes_uni.csv)");
-    const auto t_uni = load_uni_times(kData + "/hawkes_uni.csv");
+    const auto t_uni = lobmod::read_times_csv(kData + "/hawkes_uni.csv");
     const double t_horizon = 1000.0; // dgp_params.json: hawkes_uni.T
     const auto fit_u = lobmod::fit_uni(t_uni, t_horizon);
     std::printf("%zu events on [0, %.0f]\n", t_uni.size(), t_horizon);
@@ -144,7 +113,7 @@ int main() {
 
     // -------------------------------------------------------- Hawkes bivariate
     section("4. Bivariate Hawkes: buy/sell market-order cross-excitation");
-    const auto [t_biv, k_biv] = load_biv_times(kData + "/hawkes_biv.csv");
+    const auto [t_biv, k_biv] = lobmod::read_marked_times_csv(kData + "/hawkes_biv.csv");
     const double t_biv_horizon = 600.0; // dgp_params.json: hawkes_biv.T
     const auto fit_b = lobmod::fit_biv(t_biv, k_biv, t_biv_horizon);
     int n_buy = 0;

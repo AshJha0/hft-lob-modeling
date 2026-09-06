@@ -7,7 +7,7 @@ JUNIT=/usr/share/java/junit4.jar
 HAMCREST=/usr/share/java/hamcrest.jar
 
 if [ ! -d out/test ]; then
-    ./build.sh
+    bash build.sh
 fi
 
 TESTS=$(cd out/test && find . -name '*Test.class' ! -name '*\$*' \

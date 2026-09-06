@@ -1,4 +1,4 @@
-# P13 `lobmod` — API Specification (cross-language contract)
+# `lobmod` — API Specification (cross-language contract)
 
 Binding contract for the Python (`lobmod`), C++ (`lobmod::`), Rust (crate
 `lobmod`) and Java (`com.quant.lobmod`) implementations. Every formula,
@@ -12,6 +12,15 @@ Error behavior (everywhere a rule below says "error"): Python raises
 `Result<_, LobError>` (manual thiserror-style enum, no panic on bad input);
 Java throws `IllegalArgumentException`. Recoverable model diagnostics
 (near-critical branching, non-convergence) are **reported, never thrown**.
+Every integer quantity in this contract (ticks, sizes, order ids, sequence
+numbers, seeds) is a **signed 64-bit integer** in every port; nothing is
+silently narrowed, wrapped or masked — out-of-range values are errors.
+Python additionally accepts any `numbers.Integral` (e.g. `numpy.int64`) but
+never `bool`; non-integral floats are never truncated to integers.
+
+Units: book prices are tick counts (`tick_size` converts currency to ticks
+and is otherwise never used); sizes are unit-less integers; Hawkes times and
+`T` share one arbitrary time unit; PnL is in ticks per unit size.
 
 ## 1. Pinned RNG — `Lcg64`
 
@@ -19,7 +28,7 @@ The only source of randomness in the whole project (ZI generator, Ogata
 thinning). Never use a language's built-in RNG.
 
 ```
-state_0   = seed (unsigned 64-bit; error if negative)
+state_0   = seed, an integer in [0, 2^63 - 1] (error otherwise; never masked)
 state_n+1 = (6364136223846793005 * state_n + 1442695040888963407) mod 2^64
 next_u64():        advance once, return new state
 uniform():         (next_u64() >> 11) * 2^-53            in [0, 1)
@@ -37,13 +46,32 @@ Draw order matters; consume uniforms exactly as the algorithms below state.
 
 * Prices are positive integer multiples of `tick_size` (> 0, finite; error
   otherwise). Internally a price is its integer tick count; all book prices
-  in this contract are **in ticks**. A submitted price is validated with
-  `|price/tick - round(price/tick)| <= 1e-9 * max(1, |price/tick|)`, error on
-  violation; `price <= 0`, non-finite: error.
+  in this contract are **in ticks**. A submitted currency price is converted
+  by the pinned rule
+
+  ```
+  ratio = price / tick_size                      (price <= 0 or non-finite: error)
+  ticks = floor(ratio); if ratio - ticks >= 0.5: ticks += 1    (round half up)
+  error if |ratio - ticks| > 1e-9 * max(1, ratio)              (off-grid)
+  error if ticks < 1                                           (rounds to 0 ticks)
+  error if ticks > MAX_TICKS = 9e18                            (64-bit range)
+  ```
+
+  An out-of-range price is therefore always an error and can never be
+  reinterpreted as a negative price or as an unbounded (market) order.
+  Every port also exposes `limit_ticks(side, price_ticks, size, order_id)`
+  taking the integer tick count directly (same validation, no float
+  conversion); it is the path used by replay.
 * Two sides `B` (bids) and `S` (asks). Each price level holds a FIFO queue
   of orders `(order_id, remaining_size)`. Sizes are positive integers (error
-  otherwise). `order_id` must not collide with a live resting order (error).
+  otherwise; also error above `MAX_TICKS`). `order_id` must not collide with
+  a live resting order (error).
 * Best bid = max bid level, best ask = min ask level.
+* Optional history: a book records every fill (`trades`) and, in Python and
+  C++, every event (`log`) for its lifetime; both grow without bound. Each
+  port offers a constructor flag `record_trades` (default true) to disable
+  recording and a `clear_history()` call to drop what was recorded. The
+  matching semantics do not depend on the flag.
 
 ### 2.2 Events and matching (price-time priority)
 
@@ -79,14 +107,38 @@ depth(side, k) = sum of level sizes over the best k levels of side
 ### 2.4 Event stream schema (`data/lob_events.csv`)
 
 Header exactly `seq,type,side,price,size,order_id`. `seq` is 1-based.
-`type` in `{L, C, M}`; `side` in `{B, S}`. For `L`: price (ticks), size,
+`type` in `{L, C, M}`; `side` in `{B, S}`. For `L`: price (**ticks**), size,
 new order id (= seq in the bundled stream). For `C`: `price = 0`,
 `size = 0`, id of the order to cancel (side echoes the resting side, not
-used by replay). For `M`: `price = 0`, `order_id = 0`. Unknown `type`:
-error. Replay = apply events in order to a fresh book with `tick_size = 1`,
-recording **after each event**: best bid/ask price (NaN if none), best-level
-sizes (0 if none), depth over top `k = 3` levels per side, mid, microprice,
-spread.
+used by replay). For `M`: `price = 0`, `order_id = 0`.
+
+Pinned CSV parsing rules (all three bundled schemas — this one, `t`, and
+`t,type` — and every port):
+
+* the header line must match exactly; a trailing `\r` (CRLF files) is
+  stripped from every line before any check;
+* trailing blank lines are ignored; a blank line before the last data row
+  is an error;
+* a row has exactly the schema's field count, split on `,` with no
+  surrounding whitespace (a trailing comma is an extra, empty field: error);
+* integer fields match `-?[0-9]+` and fit a signed 64-bit integer; time
+  fields are decimal floats that must be finite; `type` must be one of
+  `L`/`C`/`M` and `side` one of `B`/`S` (validated at parse time);
+* anything else is an error of the language's invalid-input family (C++:
+  `std::invalid_argument` even for out-of-range integers).
+
+Every port provides `read_events_csv` / `write_events_csv` (this schema),
+`read_times_csv` / `write_times_csv` (header `t`) and
+`read_marked_times_csv` / `write_marked_times_csv` (header `t,type`, types
+validated to 0/1). Writers emit `\n` line endings; time writers must produce
+text that parses back to the identical double (Python/C++ use `%.17g`).
+
+**Replay** = apply events in order to a fresh book with `tick_size = 1`
+through `limit_ticks` (event prices are tick counts — replay takes **no**
+tick-size parameter), recording **after each event**: best bid/ask price
+(NaN if none), best-level sizes (0 if none), depth over top `k = 3` levels
+per side (`depth_k` positive integer, error otherwise), mid, microprice,
+spread. Replay books do not record history.
 
 ### 2.5 Zero-intelligence generator (produces `lob_events.csv`, seed 20240613)
 
@@ -120,6 +172,9 @@ x = uniform() * sum(rates); pick the first type whose cumulative rate > x
 `n_events < 12`: error.
 
 ## 3. Hawkes processes (exponential kernel)
+
+Times `t_i` and the horizon `T` are in one arbitrary time unit (the bundled
+data uses seconds); `mu` and `beta` are per unit time, `alpha` is per event.
 
 ### 3.1 Univariate
 
@@ -179,11 +234,18 @@ sums decayed by `exp(-beta w)`, and acceptance: `d = uniform() * lam_bar`;
 accept iff `d <= lam_0 + lam_1`, with type `0` iff `d <= lam_0` else `1`;
 then `S_type += 1`. Exactly two uniforms per loop iteration in both cases.
 
+Bound: both simulators perform at most `MAX_CANDIDATES = 50,000,000` loop
+iterations (candidate draws) and raise an error if that bound is reached
+(the loop terminates almost surely but has no finite worst case).
+
 ### 3.4 MLE — pinned Nelder-Mead setup
 
 Nelder-Mead (section 5) minimizes the negative log-likelihood over
 **log-transformed** parameters (positivity by construction). Objectives are
-pure: any overflow/non-finite evaluation returns the penalty `1e10`.
+pure (total functions that never raise): any overflow/non-finite evaluation
+returns the penalty `1e10`, and so does `exp` underflow of a parameter that
+must be strictly positive (`mu`, `mu_0`, `mu_1`, `beta` = 0 exactly);
+`alpha = 0` by underflow is a valid (Poisson) evaluation.
 
 * Univariate: `x = (log mu, log alpha, log beta)`, start
   `x0 = (log(0.5 N / T), log 0.5, 0)`. One NM run.
@@ -224,13 +286,21 @@ is allowed — asymptotic p is indicative only, documented, not an error).
 sort x ascending; F_i = -expm1(-x_(i))       # 1 - exp(-x), accurately
 D = max_i max( i/n - F_i , F_i - (i-1)/n )
 lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * D  # Stephens correction
-p = clip( 2 * sum_{j=1..100} (-1)^{j-1} exp(-2 j^2 lambda^2), 0, 1 )
+if lambda >= 0.1:
+    Q = 2 * sum_{j=1..100} (-1)^{j-1} exp(-2 j^2 lambda^2)
+else:                                          # dual form, NR eq. 14.3.20
+    Q = 1 - (sqrt(2 pi) / lambda) * sum_{j=1..100} exp(-(2j-1)^2 pi^2 / (8 lambda^2))
+p = clip(Q, 0, 1)
 p = 1 exactly when D = 0. ks_pvalue errors on D outside [0,1] or n <= 0.
 ```
 
-The series is pinned at exactly 100 terms.
+Both series are pinned at exactly 100 terms. The alternating series alone is
+wrong for small `lambda` (100 terms give 0.867 instead of 1.000 at
+`lambda = 0.01`); the dual form is exact there and its terms underflow to 0,
+so `p = 1` for e.g. `D = 1e-4, n = 100`. Both forms agree to machine
+precision at the switch point.
 
-## 5. Nelder-Mead (native in every language; P02 configuration)
+## 5. Nelder-Mead (native in every language; scipy-compatible configuration)
 
 Minimize `f: R^n -> double` from `x0` (error: empty/non-finite `x0`,
 non-positive tolerances). Pinned:
@@ -275,8 +345,12 @@ e_n =   (Pb_n >= Pb_{n-1} ? qb_n     : 0)
       - (Pb_n <= Pb_{n-1} ? qb_{n-1} : 0)
       - (Pa_n <= Pa_{n-1} ? qa_n     : 0)
       + (Pa_n >= Pa_{n-1} ? qa_{n-1} : 0)
-OFI_i(w) = sum_{n=i-w+1..i} e_n        (error if the window does not fit)
+OFI_i(w) = sum_{n=i-w+1..i} e_n        (error iff i < w: e_0 is undefined)
 ```
+
+`ofi_at(states, i, w)` errors iff `i < w` (also for `w <= 0` or `i` out of
+range); `i = w` is the first valid index and sums `e_1 .. e_w`. Window,
+lookback and horizon are counted in events, not clock time.
 
 **Feature vector** at event `i`, pinned column order:
 
@@ -335,9 +409,13 @@ shape `(n_in, n_out)`; activations are row vectors: `Z = A W + b`.
 **Baselines/metrics**: majority baseline predicts the most frequent
 training label (ties: smallest label). `accuracy` = matching fraction.
 Confusion matrix: rows = true, cols = predicted. **Signal PnL** on the test
-rows: position `pos = y_pred - 1` in {-1, 0, +1};
-`gross = sum pos * fwd_ret`; `net = gross - sum |pos| * spread_i / 2`
-(half-spread cost per non-flat signal); also report the trade count.
+rows: every `y_pred` must be in `{0, 1, 2}` (error otherwise); position
+`pos = y_pred - 1` in {-1, 0, +1}; `gross = sum pos * fwd_ret`;
+`net = gross - sum |pos| * spread_i / 2` (half-spread cost per non-flat
+signal, charged on entry only — the exit is marked at mid); also report the
+trade count. PnL is in ticks per unit size. It is a signal diagnostic, not a
+tradable strategy: positions from consecutive rows overlap (one signal per
+event, each held `H` events); no fees, latency or fill probability.
 
 Degenerate all-one-class labels: training must still run (loss finite and
 decreasing); the majority baseline then wins — not an error.
@@ -389,17 +467,35 @@ train MLP (16, 8) and logistic with lr 0.1 for 800 full-batch epochs.
 
 Book invariants over the full replay (`best_bid < best_ask` whenever both
 exist; size conservation: limit size added = rested + cancelled + maker
-fills + marketable-limit taker fills); FIFO and price priority via targeted
-sequences; market order walking multiple levels; market order bigger than
-the book (partial fill reported); crossed limit executing then resting;
-cancel of unknown id errors; empty-side NaN guards; tick validation.
+fills + marketable-limit taker fills; `depth(side, k) <= depth(side, k+1)`
+and `depth(side, 1) = best size` at every event); FIFO and price priority
+via targeted sequences; market order walking multiple levels; market order
+bigger than the book (partial fill reported) and on an empty book; crossed
+limit executing then resting and stopping at its own price; price
+improvement (aggressive limit executes at the resting price); cancel of
+unknown id errors; reuse of a cancelled id succeeds; empty-side NaN guards;
+tick validation including prices that round to 0 ticks (error, book
+unchanged) and large tick counts (`tick_size = 1e-8`, price 60000 rests at
+exactly 6,000,000,000,000 ticks; price 1e300 errors); CSV robustness (CRLF
+and trailing blank line accepted; trailing comma, non-integer field,
+interior blank line, reordered header rejected); bundled streams regenerate
+bit-for-bit from their seeds.
 Hawkes: recursion vs brute force (1e-10, uni and biv); simulation
 determinism per seed; refit of the bundled samples close to the DGP
 (loose); near-critical DGP (mu=0.2, alpha=1.9, beta=2.0, T=150, seed=999)
-fits with a warning; residuals positive (compensator monotone), mean near
-1; KS at true params fails to reject (p > 0.05), wrong params reject.
-KS: tiny samples (n = 1, 3) work; p in [0,1] monotone in D. NN: backprop
-vs central finite differences (rel. 1e-6) on a small net; loss decreases;
-softmax rows sum to 1; retraining is bit-identical; degenerate one-class
-labels train and lose to majority; validation errors surface per the
-error-behavior preamble.
+fits with a warning; Poisson limit (`simulate_uni(1, 0, 1, 2000, 5)` refits
+with branching < 0.05, converged, loglik >= Poisson MLE loglik - 1e-6, and
+`uni_loglik` with alpha = 0 is independent of beta); single-event paths
+(`t = [0.7], T = 1` closed form, one positive residual, KS works, `fit_uni`
+returns; `t = [T]` exactly); objectives are pure under underflow (the
+bivariate objective at `x = (-800, -800, 0, 0, 0, 0, -800)` returns 1e10,
+`fit_biv` with `maxiter = 1` reports `converged = false`); residuals strictly
+positive (compensator monotone), mean near 1; KS at true params fails to
+reject (p > 0.05), wrong params reject.
+KS: tiny samples (n = 1, 3) work; p in [0,1] monotone in D; small-lambda
+accuracy (`ks_pvalue(1e-4, 100)` within 1e-9 of 1). NN: backprop vs central
+finite differences (rel. 1e-6) on a small net, on a no-hidden-layer
+logistic head and on a 2-class net; loss decreases; softmax rows sum to 1;
+retraining is bit-identical; degenerate one-class labels train and lose to
+majority; `signal_pnl` rejects labels outside {0, 1, 2}; validation errors
+surface per the error-behavior preamble.

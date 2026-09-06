@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate all bundled datasets and golden values for P13 (fixed seeds).
+"""Regenerate all bundled datasets and golden values (fixed seeds).
 
 Outputs (all deterministic):
     lob_events.csv        5000-event zero-intelligence stream (seed 20240613)
@@ -108,11 +108,8 @@ def main() -> None:
 
     # ------------------------------------------------------- univariate Hawkes
     t_uni = lm.simulate_uni(UNI["mu"], UNI["alpha"], UNI["beta"], UNI["T"], UNI["seed"])
-    with open(os.path.join(HERE, "hawkes_uni.csv"), "w") as fh:
-        fh.write("t\n")
-        for v in t_uni:
-            fh.write(f"{v:.17g}\n")
-    t_uni = np.loadtxt(os.path.join(HERE, "hawkes_uni.csv"), skiprows=1)
+    lm.write_times_csv(os.path.join(HERE, "hawkes_uni.csv"), t_uni)
+    t_uni = lm.read_times_csv(os.path.join(HERE, "hawkes_uni.csv"))
     print(f"hawkes_uni: {t_uni.size} events on [0, {UNI['T']}]")
 
     ll_rec = lm.uni_loglik(t_uni, UNI["T"], **UNI_EVAL)
@@ -143,12 +140,8 @@ def main() -> None:
 
     # -------------------------------------------------------- bivariate Hawkes
     t_biv, k_biv = lm.simulate_biv(BIV["mu"], BIV["alpha"], BIV["beta"], BIV["T"], BIV["seed"])
-    with open(os.path.join(HERE, "hawkes_biv.csv"), "w") as fh:
-        fh.write("t,type\n")
-        for v, k in zip(t_biv, k_biv):
-            fh.write(f"{v:.17g},{k}\n")
-    raw = np.loadtxt(os.path.join(HERE, "hawkes_biv.csv"), skiprows=1, delimiter=",")
-    t_biv, k_biv = raw[:, 0], raw[:, 1].astype(int)
+    lm.write_marked_times_csv(os.path.join(HERE, "hawkes_biv.csv"), t_biv, k_biv)
+    t_biv, k_biv = lm.read_marked_times_csv(os.path.join(HERE, "hawkes_biv.csv"))
     print(f"hawkes_biv: {t_biv.size} events ({int((k_biv == 0).sum())} type-0)")
 
     mu_e = [BIV_EVAL["mu0"], BIV_EVAL["mu1"]]

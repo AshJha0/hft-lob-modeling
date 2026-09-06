@@ -2,31 +2,71 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
 namespace lobmod {
 
-LimitOrderBook::LimitOrderBook(double tick_size) : tick_size_(tick_size) {
+namespace {
+
+/// Compact %g rendering for error messages (std::to_string prints 1e300 in full).
+std::string fmt_g(double v) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", v);
+    return buf;
+}
+
+} // namespace
+
+LimitOrderBook::LimitOrderBook(double tick_size, bool record_trades)
+    : tick_size_(tick_size), record_trades_(record_trades) {
     if (!(std::isfinite(tick_size) && tick_size > 0.0)) {
         throw std::invalid_argument("tick_size must be positive and finite, got " +
-                                    std::to_string(tick_size));
+                                    fmt_g(tick_size));
     }
 }
 
 std::int64_t LimitOrderBook::to_ticks(double price) const {
     if (!(std::isfinite(price) && price > 0.0)) {
         throw std::invalid_argument("price must be positive and finite, got " +
-                                    std::to_string(price));
+                                    fmt_g(price));
     }
     const double ratio = price / tick_size_;
-    const double ticks = std::round(ratio);
-    if (std::abs(ratio - ticks) > 1e-9 * std::max(1.0, std::abs(ratio))) {
-        throw std::invalid_argument("price " + std::to_string(price) +
+    // pinned: round half up (ratio > 0), then validate grid and range
+    double ticks = std::floor(ratio);
+    if (ratio - ticks >= 0.5) ticks += 1.0;
+    if (std::abs(ratio - ticks) > 1e-9 * std::max(1.0, ratio)) {
+        throw std::invalid_argument("price " + fmt_g(price) +
                                     " is not a multiple of tick_size " +
-                                    std::to_string(tick_size_));
+                                    fmt_g(tick_size_));
     }
-    return static_cast<std::int64_t>(ticks);
+    if (ticks < 1.0) {
+        throw std::invalid_argument("price " + fmt_g(price) +
+                                    " rounds to 0 ticks; prices must be >= 1 tick");
+    }
+    if (ticks > static_cast<double>(kMaxTicks)) {
+        throw std::invalid_argument("price " + fmt_g(price) + " is " + fmt_g(ticks) +
+                                    " ticks, above kMaxTicks = 9e18");
+    }
+    return static_cast<std::int64_t>(ticks); // in [1, 9e18]: no UB
+}
+
+std::int64_t LimitOrderBook::check_ticks(std::int64_t ticks) {
+    if (ticks < 1) {
+        throw std::invalid_argument("price_ticks must be >= 1, got " +
+                                    std::to_string(ticks));
+    }
+    if (ticks > kMaxTicks) {
+        throw std::invalid_argument("price_ticks " + std::to_string(ticks) +
+                                    " exceeds kMaxTicks");
+    }
+    return ticks;
+}
+
+void LimitOrderBook::clear_history() {
+    trades_.clear();
+    log_.clear();
 }
 
 void LimitOrderBook::check_side(char side) {
@@ -37,8 +77,8 @@ void LimitOrderBook::check_side(char side) {
 }
 
 void LimitOrderBook::check_size(std::int64_t size) {
-    if (size <= 0) {
-        throw std::invalid_argument("size must be a positive integer, got " +
+    if (size <= 0 || size > kMaxTicks) {
+        throw std::invalid_argument("size must be a positive integer <= 9e18, got " +
                                     std::to_string(size));
     }
 }
@@ -171,7 +211,7 @@ LimitOrderBook::match(char side, std::int64_t size, const std::int64_t* limit_ti
         }
         if (queue.empty()) opp.erase(best);
     }
-    trades_.insert(trades_.end(), fills.begin(), fills.end());
+    if (record_trades_) trades_.insert(trades_.end(), fills.begin(), fills.end());
     return {std::move(fills), remaining};
 }
 
@@ -180,7 +220,15 @@ LimitOrderBook::limit(char side, double price, std::int64_t size,
                       std::int64_t order_id) {
     check_side(side);
     check_size(size);
-    const std::int64_t ticks = to_ticks(price);
+    return limit_ticks(side, to_ticks(price), size, order_id);
+}
+
+std::pair<std::vector<Fill>, std::int64_t>
+LimitOrderBook::limit_ticks(char side, std::int64_t price_ticks, std::int64_t size,
+                            std::int64_t order_id) {
+    check_side(side);
+    check_size(size);
+    const std::int64_t ticks = check_ticks(price_ticks);
     if (orders_.count(order_id) > 0) {
         throw std::invalid_argument("order_id " + std::to_string(order_id) +
                                     " is already live in the book");
@@ -191,8 +239,10 @@ LimitOrderBook::limit(char side, double price, std::int64_t size,
         levels[ticks].push_back(Order{order_id, remaining});
         orders_[order_id] = {side, ticks};
     }
-    log_.push_back(BookLogEntry{'L', side, ticks, size, order_id,
-                                size - remaining, 0});
+    if (record_trades_) {
+        log_.push_back(BookLogEntry{'L', side, ticks, size, order_id,
+                                    size - remaining, 0});
+    }
     return {std::move(fills), remaining};
 }
 
@@ -215,7 +265,9 @@ std::int64_t LimitOrderBook::cancel(std::int64_t order_id) {
         }
     }
     if (queue.empty()) levels.erase(ticks);
-    log_.push_back(BookLogEntry{'C', side, ticks, removed, order_id, 0, 0});
+    if (record_trades_) {
+        log_.push_back(BookLogEntry{'C', side, ticks, removed, order_id, 0, 0});
+    }
     return removed;
 }
 
@@ -224,7 +276,9 @@ LimitOrderBook::market(char side, std::int64_t size) {
     check_side(side);
     check_size(size);
     auto [fills, unfilled] = match(side, size, nullptr);
-    log_.push_back(BookLogEntry{'M', side, 0, size, 0, size - unfilled, unfilled});
+    if (record_trades_) {
+        log_.push_back(BookLogEntry{'M', side, 0, size, 0, size - unfilled, unfilled});
+    }
     return {std::move(fills), unfilled};
 }
 

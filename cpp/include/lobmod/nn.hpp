@@ -129,9 +129,13 @@ std::vector<std::vector<int>> confusion_matrix(const std::vector<int>& y_true,
 int majority_class(const std::vector<int>& y);
 
 /// PnL of trading the predicted direction with half-spread costs: position
-/// y_pred - 1 in {-1, 0, +1}; gross = sum pos * fwd_ret; net subtracts
-/// |pos| * spread / 2 per signal.  Returns (gross, net, n_trades).
-/// \throws std::invalid_argument on mismatched or non-finite inputs.
+/// y_pred - 1 in {-1, 0, +1}; gross = sum pos * fwd_ret (ticks per unit
+/// size); net subtracts |pos| * spread / 2 per non-flat signal, charged on
+/// entry only (exit marked at mid).  Returns (gross, net, n_trades).  A
+/// signal diagnostic, not a tradable strategy: positions of consecutive
+/// rows overlap; no fees, latency or fill probability.
+/// \throws std::invalid_argument on mismatched, empty or non-finite inputs,
+///         or a label outside {0, 1, 2}.
 std::tuple<double, double, int> signal_pnl(const std::vector<int>& y_pred,
                                            const std::vector<double>& fwd_ret,
                                            const std::vector<double>& spread);

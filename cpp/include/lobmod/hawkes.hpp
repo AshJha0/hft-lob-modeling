@@ -22,16 +22,46 @@
 /// By the time-rescaling theorem, compensator increments between events are
 /// iid Exp(1) under the true model — the residuals fed to the KS test in
 /// gof.hpp.
+///
+/// Units: times and T share one arbitrary time unit; mu and beta are per
+/// unit time, alpha per event.  Simulators stop with an error after
+/// kMaxCandidates thinning draws (the loop terminates almost surely but has
+/// no finite worst case).
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace lobmod {
 
 /// 2x2 matrix as nested std::array (row major: m[row][col]).
 using Mat2 = std::array<std::array<double, 2>, 2>;
+
+/// Pinned upper bound on thinning candidates per simulation.
+constexpr std::int64_t kMaxCandidates = 50000000LL;
+
+/// Read a one-column event-time CSV with header `t` (pinned CSV rules of
+/// csv.hpp; values must be finite — ordering is validated by the
+/// likelihood functions).
+/// \throws std::invalid_argument on any violation.
+std::vector<double> read_times_csv(const std::string& path);
+
+/// Read a two-column `t,type` CSV; types are validated to be 0 or 1.
+/// \returns (times, types).
+std::pair<std::vector<double>, std::vector<int>>
+read_marked_times_csv(const std::string& path);
+
+/// Write event times with header `t` using `%.17g` (exact round trip).
+/// \throws std::invalid_argument on non-finite values or an unwritable file.
+void write_times_csv(const std::string& path, const std::vector<double>& times);
+
+/// Write `t,type` rows (`%.17g` times, integer types 0/1).
+void write_marked_times_csv(const std::string& path,
+                            const std::vector<double>& times,
+                            const std::vector<int>& types);
 
 /// Exact univariate log-likelihood via the pinned O(N) recursion.
 /// \throws std::invalid_argument on bad times (empty, non-finite,
@@ -112,18 +142,37 @@ struct HawkesBivFit {
     std::string warning;      ///< near-critical / non-stationary diagnostic
 };
 
+/// Objective type minimized by the fits (log-parameter vector -> -loglik).
+using FitObjective = std::function<double(const std::vector<double>&)>;
+
+/// The pure objective minimized by fit_uni(): x = (log mu, log alpha,
+/// log beta) -> -uni_loglik; returns the penalty 1e10 (never throws) on
+/// overflow, non-finite values, or exp underflow of mu/beta to exactly 0.
+/// \throws std::invalid_argument on invalid event times (at construction).
+FitObjective uni_fit_objective(const std::vector<double>& times, double T);
+
+/// The pure objective minimized by fit_biv(): x = (log mu0, log mu1,
+/// log a00, log a01, log a10, log a11, log beta) -> -biv_loglik with the
+/// same penalty rules (mu0, mu1, beta underflow -> 1e10).
+FitObjective biv_fit_objective(const std::vector<double>& times,
+                               const std::vector<int>& types, double T);
+
 /// Univariate MLE via Nelder-Mead on log-transformed parameters.  Pinned
 /// setup: x = (log mu, log alpha, log beta), start (log(0.5 N / T),
-/// log 0.5, 0), defaults xatol 1e-8 / fatol 1e-10 / maxiter 5000; overflow
-/// or non-finite objective evaluations return the penalty 1e10.
-HawkesUniFit fit_uni(const std::vector<double>& times, double T);
+/// log 0.5, 0), xatol 1e-8 / fatol 1e-10 and `maxiter` (pinned default
+/// 5000).  `converged == false` means the iteration cap stopped the
+/// search and the parameters are only the best vertex found.
+HawkesUniFit fit_uni(const std::vector<double>& times, double T,
+                     int maxiter = 5000);
 
 /// Bivariate MLE (pinned): x = (log mu0, log mu1, log a00, log a01,
 /// log a10, log a11, log beta), start mu_m = 0.5 N_m / T, a = 0.25,
-/// beta = 1; two chained Nelder-Mead runs, iterations summed.
+/// beta = 1; two chained Nelder-Mead runs (each capped at `maxiter`),
+/// iterations summed, converged flag from the second run.
 /// \throws std::invalid_argument if either event type is absent.
 HawkesBivFit fit_biv(const std::vector<double>& times,
-                     const std::vector<int>& types, double T);
+                     const std::vector<int>& types, double T,
+                     int maxiter = 5000);
 
 } // namespace lobmod
 

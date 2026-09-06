@@ -6,7 +6,7 @@ sequenceDiagram
 
     Note over A: 101 x 3 (id 7), 102 x 5 (id 8)
     T->>B: limit(B, price=102, size=6, id=9)
-    B->>B: validate side, tick grid, size, unique id
+    B->>B: validate side, tick grid and range 1..9e18, size, unique id
     B->>A: crosses? 102 >= best ask 101 -> match
     A-->>B: fill 3 @ 101 (maker id 7, FIFO front)
     Note over B: level 101 empty -> removed

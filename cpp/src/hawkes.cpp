@@ -2,9 +2,12 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <fstream>
 #include <stdexcept>
 #include <utility>
 
+#include "lobmod/csv.hpp"
 #include "lobmod/neldermead.hpp"
 #include "lobmod/rng.hpp"
 
@@ -271,11 +274,11 @@ std::vector<double> simulate_uni(double mu, double alpha, double beta, double T,
     double t = 0.0;
     double s = 0.0;
     std::vector<double> out;
-    while (true) {
+    for (std::int64_t n = 0; n < kMaxCandidates; ++n) {
         const double lam_bar = mu + alpha * s; // intensity just after last step
         const double w = rng.exponential(lam_bar);
         t += w;
-        if (t > T) break;
+        if (t > T) return out;
         s *= std::exp(-beta * w);
         const double lam_t = mu + alpha * s;
         if (rng.uniform() * lam_bar <= lam_t) {
@@ -283,7 +286,7 @@ std::vector<double> simulate_uni(double mu, double alpha, double beta, double T,
             s += 1.0;
         }
     }
-    return out;
+    throw std::invalid_argument("simulate_uni exceeded kMaxCandidates thinning draws");
 }
 
 std::pair<std::vector<double>, std::vector<int>>
@@ -306,13 +309,13 @@ simulate_biv(const std::array<double, 2>& mu, const Mat2& alpha, double beta,
     double s[2] = {0.0, 0.0};
     std::vector<double> times;
     std::vector<int> types;
-    while (true) {
+    for (std::int64_t n = 0; n < kMaxCandidates; ++n) {
         double lam0 = mu[0] + alpha[0][0] * s[0] + alpha[0][1] * s[1];
         double lam1 = mu[1] + alpha[1][0] * s[0] + alpha[1][1] * s[1];
         const double lam_bar = lam0 + lam1;
         const double w = rng.exponential(lam_bar);
         t += w;
-        if (t > T) break;
+        if (t > T) return {std::move(times), std::move(types)};
         const double decay = std::exp(-beta * w);
         s[0] *= decay;
         s[1] *= decay;
@@ -326,7 +329,7 @@ simulate_biv(const std::array<double, 2>& mu, const Mat2& alpha, double beta,
             s[typ] += 1.0;
         }
     }
-    return {std::move(times), std::move(types)};
+    throw std::invalid_argument("simulate_biv exceeded kMaxCandidates thinning draws");
 }
 
 double spectral_radius_2x2(const Mat2& m) {
@@ -347,10 +350,9 @@ double spectral_radius_2x2(const Mat2& m) {
     return std::sqrt(det);
 }
 
-HawkesUniFit fit_uni(const std::vector<double>& times, double T) {
+FitObjective uni_fit_objective(const std::vector<double>& times, double T) {
     check_times(times, T);
-
-    const auto objective = [&](const std::vector<double>& x) -> double {
+    return [times, T](const std::vector<double>& x) -> double {
         const double mu = std::exp(x[0]);
         const double alpha = std::exp(x[1]);
         const double beta = std::exp(x[2]);
@@ -361,10 +363,33 @@ HawkesUniFit fit_uni(const std::vector<double>& times, double T) {
         const double val = uni_loglik(times, T, mu, alpha, beta);
         return std::isfinite(val) ? -val : kPenalty;
     };
+}
 
+FitObjective biv_fit_objective(const std::vector<double>& times,
+                               const std::vector<int>& types, double T) {
+    check_times(times, T);
+    check_types(types, times.size());
+    return [times, types, T](const std::vector<double>& x) -> double {
+        double p[7];
+        for (int i = 0; i < 7; ++i) {
+            p[i] = std::exp(x[i]);
+            if (!std::isfinite(p[i])) return kPenalty;
+        }
+        // exp() can underflow to exactly 0, which the likelihood's parameter
+        // validation would reject: treat it as out of domain (pure objective).
+        if (p[0] <= 0.0 || p[1] <= 0.0 || p[6] <= 0.0) return kPenalty;
+        const std::array<double, 2> mu = {p[0], p[1]};
+        const Mat2 alpha = {{{p[2], p[3]}, {p[4], p[5]}}};
+        const double val = biv_loglik(times, types, T, mu, alpha, p[6]);
+        return std::isfinite(val) ? -val : kPenalty;
+    };
+}
+
+HawkesUniFit fit_uni(const std::vector<double>& times, double T, int maxiter) {
+    const FitObjective objective = uni_fit_objective(times, T);
     const std::vector<double> x0 = {
         std::log(0.5 * static_cast<double>(times.size()) / T), std::log(0.5), 0.0};
-    const NMResult res = nelder_mead(objective, x0);
+    const NMResult res = nelder_mead(objective, x0, 1e-8, 1e-10, maxiter);
     const double mu = std::exp(res.x[0]);
     const double alpha = std::exp(res.x[1]);
     const double beta = std::exp(res.x[2]);
@@ -375,7 +400,7 @@ HawkesUniFit fit_uni(const std::vector<double>& times, double T) {
 }
 
 HawkesBivFit fit_biv(const std::vector<double>& times,
-                     const std::vector<int>& types, double T) {
+                     const std::vector<int>& types, double T, int maxiter) {
     check_times(times, T);
     check_types(types, times.size());
     std::size_t n0 = 0;
@@ -387,29 +412,15 @@ HawkesBivFit fit_biv(const std::vector<double>& times,
         throw std::invalid_argument(
             "both event types must be present to fit the bivariate model");
     }
-
-    const auto objective = [&](const std::vector<double>& x) -> double {
-        double p[7];
-        for (int i = 0; i < 7; ++i) {
-            p[i] = std::exp(x[i]);
-            if (!std::isfinite(p[i])) return kPenalty;
-        }
-        // exp() can underflow to exactly 0, which the likelihood's parameter
-        // validation would reject: treat it as out of domain.
-        if (p[0] <= 0.0 || p[1] <= 0.0 || p[6] <= 0.0) return kPenalty;
-        const std::array<double, 2> mu = {p[0], p[1]};
-        const Mat2 alpha = {{{p[2], p[3]}, {p[4], p[5]}}};
-        const double val = biv_loglik(times, types, T, mu, alpha, p[6]);
-        return std::isfinite(val) ? -val : kPenalty;
-    };
-
+    const FitObjective objective = biv_fit_objective(times, types, T);
     const std::vector<double> x0 = {
         std::log(0.5 * static_cast<double>(n0) / T),
         std::log(0.5 * static_cast<double>(n1) / T),
         std::log(0.25), std::log(0.25), std::log(0.25), std::log(0.25),
         0.0};
-    const NMResult res1 = nelder_mead(objective, x0);
-    const NMResult res2 = nelder_mead(objective, res1.x); // pinned polish stage
+    const NMResult res1 = nelder_mead(objective, x0, 1e-8, 1e-10, maxiter);
+    // pinned polish stage
+    const NMResult res2 = nelder_mead(objective, res1.x, 1e-8, 1e-10, maxiter);
     double p[7];
     for (int i = 0; i < 7; ++i) p[i] = std::exp(res2.x[i]);
     const std::array<double, 2> mu = {p[0], p[1]};
@@ -429,6 +440,82 @@ HawkesBivFit fit_biv(const std::vector<double>& times,
                         res2.converged,
                         res1.n_iter + res2.n_iter,
                         branching_warning(rad)};
+}
+
+// -------------------------------------------------------------------- CSV i/o
+
+namespace {
+
+std::string format_g17(double v) {
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "%.17g", v);
+    return buf;
+}
+
+} // namespace
+
+std::vector<double> read_times_csv(const std::string& path) {
+    const auto lines = read_csv_lines(path, "t");
+    std::vector<double> out;
+    out.reserve(lines.size());
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string context = "time row " + std::to_string(i + 1);
+        if (lines[i].find(',') != std::string::npos) {
+            throw std::invalid_argument("malformed " + context +
+                                        ": expected 1 field: '" + lines[i] + "'");
+        }
+        out.push_back(parse_double_strict(lines[i], context));
+    }
+    return out;
+}
+
+std::pair<std::vector<double>, std::vector<int>>
+read_marked_times_csv(const std::string& path) {
+    const auto lines = read_csv_lines(path, "t,type");
+    std::pair<std::vector<double>, std::vector<int>> out;
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const std::string context = "marked-time row " + std::to_string(i + 1);
+        const auto f = split_csv_fields(lines[i]);
+        if (f.size() != 2) {
+            throw std::invalid_argument("malformed " + context +
+                                        ": expected 2 fields: '" + lines[i] + "'");
+        }
+        const std::int64_t k = parse_int64_strict(f[1], context);
+        if (k != 0 && k != 1) {
+            throw std::invalid_argument("types must be 0 or 1, got " +
+                                        std::to_string(k) + " in " + context);
+        }
+        out.first.push_back(parse_double_strict(f[0], context));
+        out.second.push_back(static_cast<int>(k));
+    }
+    return out;
+}
+
+void write_times_csv(const std::string& path, const std::vector<double>& times) {
+    for (double v : times) {
+        if (!std::isfinite(v)) throw std::invalid_argument("times must be finite");
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) throw std::invalid_argument("cannot write CSV: " + path);
+    out << "t\n";
+    for (double v : times) out << format_g17(v) << '\n';
+    if (!out) throw std::invalid_argument("write failed for CSV: " + path);
+}
+
+void write_marked_times_csv(const std::string& path,
+                            const std::vector<double>& times,
+                            const std::vector<int>& types) {
+    for (double v : times) {
+        if (!std::isfinite(v)) throw std::invalid_argument("times must be finite");
+    }
+    check_types(types, times.size());
+    std::ofstream out(path, std::ios::binary);
+    if (!out) throw std::invalid_argument("cannot write CSV: " + path);
+    out << "t,type\n";
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        out << format_g17(times[i]) << ',' << types[i] << '\n';
+    }
+    if (!out) throw std::invalid_argument("write failed for CSV: " + path);
 }
 
 } // namespace lobmod

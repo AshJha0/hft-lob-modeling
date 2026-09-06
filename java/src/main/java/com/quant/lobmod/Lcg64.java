@@ -21,14 +21,16 @@ public final class Lcg64 {
     private static final long A = 6364136223846793005L;
     private static final long C = 1442695040888963407L;
     private static final double INV_2_53 = 0x1.0p-53;
+    /** Largest accepted seed: the pinned domain is {@code [0, 2^63 - 1]}. */
+    public static final long MAX_SEED = Long.MAX_VALUE;
 
     private long state;
 
     /**
-     * Creates the generator with the given non-negative seed.
+     * Creates the generator with the given seed.
      *
-     * @param seed non-negative seed; the initial state is {@code seed} taken
-     *     as an unsigned 64-bit value
+     * @param seed seed in {@code [0, MAX_SEED]}; the initial state is the
+     *     seed itself (nothing is masked or wrapped)
      * @throws IllegalArgumentException if {@code seed} is negative
      */
     public Lcg64(long seed) {
@@ -70,12 +72,12 @@ public final class Lcg64 {
      *
      * @throws IllegalArgumentException if {@code p} is not in (0, 1)
      */
-    public int geometric(double p) {
+    public long geometric(double p) {
         if (!(p > 0.0 && p < 1.0)) {
             throw new IllegalArgumentException("p must be in (0, 1), got " + p);
         }
         double u = uniform();
-        return (int) Math.floor(Math.log1p(-u) / Math.log1p(-p));
+        return (long) Math.floor(Math.log1p(-u) / Math.log1p(-p));
     }
 
     /**
@@ -84,11 +86,11 @@ public final class Lcg64 {
      *
      * @throws IllegalArgumentException if {@code n} is not positive
      */
-    public int randint(int n) {
+    public long randint(long n) {
         if (n <= 0) {
             throw new IllegalArgumentException("n must be a positive integer, got " + n);
         }
-        int k = (int) (uniform() * n);
+        long k = (long) (uniform() * (double) n);
         return k >= n ? n - 1 : k;
     }
 }

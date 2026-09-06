@@ -20,12 +20,15 @@
 /// over the top k levels, ret = mid_i - mid_{i-ret_window}].
 ///
 /// Label: mid-price direction over the next H events with an epsilon dead
-/// zone; classes pinned 0 = down, 1 = flat, 2 = up.
+/// zone; classes pinned 0 = down, 1 = flat, 2 = up.  Windows, lookback and
+/// horizon are counted in events (the schema has no timestamps); prices
+/// and returns are in ticks.
 
 #include <cstddef>
 #include <string>
 #include <vector>
 
+#include "lobmod/nn.hpp"
 #include "lobmod/replay.hpp"
 
 namespace lobmod {
@@ -70,13 +73,25 @@ struct FeatureSet {
     std::vector<double> spread;         ///< spread at decision time (costs)
 
     std::size_t size() const { return y.size(); }
+
+    /// The selected rows of X as a dense Matrix (e.g. a chronological_split
+    /// index vector).  \throws std::invalid_argument on an out-of-range index.
+    Matrix x_rows(const std::vector<std::size_t>& idx) const;
+    /// The selected labels.
+    std::vector<int> y_rows(const std::vector<std::size_t>& idx) const;
+    /// The selected forward returns.
+    std::vector<double> fwd_ret_rows(const std::vector<std::size_t>& idx) const;
+    /// The selected decision-time spreads.
+    std::vector<double> spread_rows(const std::vector<std::size_t>& idx) const;
 };
 
 /// Per-event order-flow contributions e_n (file docs formula); e_0 = NaN and
 /// events touching an empty side yield NaN.
 std::vector<double> ofi_series(const BookStates& states);
 
-/// OFI over the `window` events ending at 0-based `event_index`.
+/// OFI over the `window` events ending at 0-based `event_index`.  Pinned
+/// rule: error iff `event_index < window` (e_0 is undefined); event_index
+/// == window is the first valid index and sums e_1 .. e_window.
 /// \throws std::invalid_argument if the window does not fit or arguments are
 ///         invalid.
 double ofi_at(const BookStates& states, std::size_t event_index, int window);

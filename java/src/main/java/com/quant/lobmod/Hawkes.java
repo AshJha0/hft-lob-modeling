@@ -1,5 +1,6 @@
 package com.quant.lobmod;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.ToDoubleFunction;
@@ -32,10 +33,17 @@ import java.util.function.ToDoubleFunction;
  *
  * <p>Recoverable diagnostics (near-critical / non-stationary branching) are
  * reported in the fit result's {@code warning} field, never thrown.</p>
+ *
+ * <p><b>Units.</b> Times and {@code T} share one arbitrary time unit;
+ * {@code mu} and {@code beta} are per unit time, {@code alpha} per event.
+ * Simulators stop with an error after {@link #MAX_CANDIDATES} thinning
+ * draws (the loop terminates almost surely but has no finite worst case).</p>
  */
 public final class Hawkes {
 
     private static final double PENALTY = 1e10;
+    /** Pinned upper bound on thinning candidates per simulation. */
+    public static final long MAX_CANDIDATES = 50_000_000L;
 
     private Hawkes() {
     }
@@ -374,12 +382,12 @@ public final class Hawkes {
         double t = 0.0;
         double s = 0.0;
         List<Double> out = new ArrayList<>();
-        while (true) {
+        for (long n = 0; n < MAX_CANDIDATES; n++) {
             double lamBar = mu + alpha * s;      // intensity just after last step
             double w = rng.exponential(lamBar);  // 1st uniform
             t += w;
             if (t > T) {
-                break;
+                return out.stream().mapToDouble(Double::doubleValue).toArray();
             }
             s *= Math.exp(-beta * w);
             double lamT = mu + alpha * s;
@@ -388,7 +396,8 @@ public final class Hawkes {
                 s += 1.0;
             }
         }
-        return out.stream().mapToDouble(Double::doubleValue).toArray();
+        throw new IllegalArgumentException(
+                "simulateUni exceeded MAX_CANDIDATES = " + MAX_CANDIDATES + " thinning draws");
     }
 
     /**
@@ -418,14 +427,16 @@ public final class Hawkes {
         double[] s = {0.0, 0.0};
         List<Double> times = new ArrayList<>();
         List<Integer> types = new ArrayList<>();
-        while (true) {
+        for (long n = 0; n < MAX_CANDIDATES; n++) {
             double lam0 = mu[0] + alpha[0][0] * s[0] + alpha[0][1] * s[1];
             double lam1 = mu[1] + alpha[1][0] * s[0] + alpha[1][1] * s[1];
             double lamBar = lam0 + lam1;
             double w = rng.exponential(lamBar);
             t += w;
             if (t > T) {
-                break;
+                return new BivSample(
+                        times.stream().mapToDouble(Double::doubleValue).toArray(),
+                        types.stream().mapToInt(Integer::intValue).toArray());
             }
             double decay = Math.exp(-beta * w);
             s[0] *= decay;
@@ -440,9 +451,8 @@ public final class Hawkes {
                 s[typ] += 1.0;
             }
         }
-        return new BivSample(
-                times.stream().mapToDouble(Double::doubleValue).toArray(),
-                types.stream().mapToInt(Integer::intValue).toArray());
+        throw new IllegalArgumentException(
+                "simulateBiv exceeded MAX_CANDIDATES = " + MAX_CANDIDATES + " thinning draws");
     }
 
     // -------------------------------------------------------------------- MLE
@@ -460,20 +470,18 @@ public final class Hawkes {
     }
 
     /**
-     * Univariate MLE via Nelder-Mead on log-transformed parameters.
+     * The pure objective minimized by {@link #fitUni}: {@code x = (log mu,
+     * log alpha, log beta)} maps to {@code -uniLoglik}; returns the penalty
+     * {@code 1e10} (never throws) on overflow, non-finite values, or
+     * {@code exp} underflow of {@code mu}/{@code beta} to exactly 0.
      *
-     * <p>Pinned setup: minimize {@code -ll(exp(x))} over
-     * {@code x = (log mu, log alpha, log beta)} from
-     * {@code x0 = (log(0.5 N / T), log 0.5, 0)} with the pinned NM defaults.
-     * The log transform enforces positivity without constraints. A
-     * near-critical (&ge; 0.9) or non-stationary (&ge; 1) fitted branching
-     * ratio is reported in {@code warning}; the fit still returns.</p>
+     * @throws IllegalArgumentException on invalid event times (at
+     *     construction)
      */
-    public static UniFit fitUni(double[] times, double T) {
+    public static ToDoubleFunction<double[]> uniFitObjective(double[] times, double T) {
         checkTimes(times, T);
         final double[] t = times.clone();
-
-        ToDoubleFunction<double[]> objective = x -> {
+        return x -> {
             double mu = Math.exp(x[0]);
             double alpha = Math.exp(x[1]);
             double beta = Math.exp(x[2]);
@@ -484,9 +492,30 @@ public final class Hawkes {
             double val = uniLoglik(t, T, mu, alpha, beta);
             return Double.isFinite(val) ? -val : PENALTY;
         };
+    }
 
-        double[] x0 = {Math.log(0.5 * t.length / T), Math.log(0.5), 0.0};
-        NelderMead.Result res = NelderMead.minimize(objective, x0);
+    /**
+     * Univariate MLE via Nelder-Mead on log-transformed parameters with the
+     * pinned iteration cap (5000).
+     *
+     * <p>Pinned setup: minimize {@code -ll(exp(x))} over
+     * {@code x = (log mu, log alpha, log beta)} from
+     * {@code x0 = (log(0.5 N / T), log 0.5, 0)} with the pinned NM defaults.
+     * The log transform enforces positivity without constraints. A
+     * near-critical (&ge; 0.9) or non-stationary (&ge; 1) fitted branching
+     * ratio is reported in {@code warning}; the fit still returns.
+     * {@code converged == false} means the iteration cap stopped the search
+     * and the parameters are only the best vertex found.</p>
+     */
+    public static UniFit fitUni(double[] times, double T) {
+        return fitUni(times, T, 5000);
+    }
+
+    /** {@link #fitUni(double[], double)} with an explicit Nelder-Mead iteration cap. */
+    public static UniFit fitUni(double[] times, double T, int maxiter) {
+        ToDoubleFunction<double[]> objective = uniFitObjective(times, T);
+        double[] x0 = {Math.log(0.5 * times.length / T), Math.log(0.5), 0.0};
+        NelderMead.Result res = NelderMead.minimize(objective, x0, 1e-8, 1e-10, maxiter);
         double mu = Math.exp(res.x()[0]);
         double alpha = Math.exp(res.x()[1]);
         double beta = Math.exp(res.x()[2]);
@@ -526,36 +555,22 @@ public final class Hawkes {
     }
 
     /**
-     * Bivariate MLE (full 2x2 alpha, scalar beta) via pinned Nelder-Mead.
+     * The pure objective minimized by {@link #fitBiv}: {@code x = (log mu0,
+     * log mu1, log a00, log a01, log a10, log a11, log beta)} maps to
+     * {@code -bivLoglik}; returns the penalty {@code 1e10} (never throws) on
+     * overflow, non-finite values, or {@code exp} underflow of
+     * {@code mu0}/{@code mu1}/{@code beta} to exactly 0.
      *
-     * <p>Pinned setup: parameters {@code x = (log mu0, log mu1, log a00,
-     * log a01, log a10, log a11, log beta)}; start {@code mu_m = 0.5 N_m / T},
-     * all {@code a = 0.25}, {@code beta = 1}; two chained Nelder-Mead stages
-     * (the second restarts from the first stage's optimum) — a deterministic
-     * polish that guards against premature simplex collapse in 7 dimensions.
-     * Reports {@code warning} when the branching spectral radius is &ge; 0.9
-     * (near-critical) or &ge; 1 (non-stationary).</p>
-     *
-     * @throws IllegalArgumentException if either event type is absent
+     * @throws IllegalArgumentException on invalid times/types (at
+     *     construction)
      */
-    public static BivFit fitBiv(double[] times, int[] types, double T) {
+    public static ToDoubleFunction<double[]> bivFitObjective(double[] times, int[] types,
+            double T) {
         checkTimes(times, T);
         checkTypes(types, times.length);
-        int n0 = 0;
-        for (int k : types) {
-            if (k == 0) {
-                n0++;
-            }
-        }
-        int n1 = times.length - n0;
-        if (n0 == 0 || n1 == 0) {
-            throw new IllegalArgumentException(
-                    "both event types must be present to fit the bivariate model");
-        }
         final double[] t = times.clone();
         final int[] k = types.clone();
-
-        ToDoubleFunction<double[]> objective = x -> {
+        return x -> {
             double[] p = new double[7];
             for (int i = 0; i < 7; i++) {
                 p[i] = Math.exp(x[i]);
@@ -571,14 +586,50 @@ public final class Hawkes {
             double val = bivLoglik(t, k, T, mu, alpha, p[6]);
             return Double.isFinite(val) ? -val : PENALTY;
         };
+    }
 
+    /**
+     * Bivariate MLE (full 2x2 alpha, scalar beta) via pinned Nelder-Mead
+     * with the pinned per-stage iteration cap (5000).
+     *
+     * <p>Pinned setup: parameters {@code x = (log mu0, log mu1, log a00,
+     * log a01, log a10, log a11, log beta)}; start {@code mu_m = 0.5 N_m / T},
+     * all {@code a = 0.25}, {@code beta = 1}; two chained Nelder-Mead stages
+     * (the second restarts from the first stage's optimum) — a deterministic
+     * polish that guards against premature simplex collapse in 7 dimensions.
+     * Reports {@code warning} when the branching spectral radius is &ge; 0.9
+     * (near-critical) or &ge; 1 (non-stationary); {@code converged} is the
+     * second stage's tolerance flag.</p>
+     *
+     * @throws IllegalArgumentException if either event type is absent
+     */
+    public static BivFit fitBiv(double[] times, int[] types, double T) {
+        return fitBiv(times, types, T, 5000);
+    }
+
+    /** {@link #fitBiv(double[], int[], double)} with an explicit per-stage iteration cap. */
+    public static BivFit fitBiv(double[] times, int[] types, double T, int maxiter) {
+        checkTimes(times, T);
+        checkTypes(types, times.length);
+        int n0 = 0;
+        for (int k : types) {
+            if (k == 0) {
+                n0++;
+            }
+        }
+        int n1 = times.length - n0;
+        if (n0 == 0 || n1 == 0) {
+            throw new IllegalArgumentException(
+                    "both event types must be present to fit the bivariate model");
+        }
+        ToDoubleFunction<double[]> objective = bivFitObjective(times, types, T);
         double[] x0 = {
             Math.log(0.5 * n0 / T), Math.log(0.5 * n1 / T),
             Math.log(0.25), Math.log(0.25), Math.log(0.25), Math.log(0.25),
             0.0,
         };
-        NelderMead.Result res1 = NelderMead.minimize(objective, x0);
-        NelderMead.Result res2 = NelderMead.minimize(objective, res1.x());
+        NelderMead.Result res1 = NelderMead.minimize(objective, x0, 1e-8, 1e-10, maxiter);
+        NelderMead.Result res2 = NelderMead.minimize(objective, res1.x(), 1e-8, 1e-10, maxiter);
         double[] p = new double[7];
         for (int i = 0; i < 7; i++) {
             p[i] = Math.exp(res2.x()[i]);
@@ -593,5 +644,92 @@ public final class Hawkes {
         double rad = spectralRadius2x2(branching);
         return new BivFit(mu, alpha, beta, -res2.fval(), branching, rad,
                 res2.converged(), res1.nIter() + res2.nIter(), branchingWarning(rad));
+    }
+
+    // ---------------------------------------------------------------- CSV i/o
+
+    /**
+     * Reads a one-column event-time CSV with header {@code t} (pinned rules
+     * of {@link Csv}; values must be finite — ordering is validated by the
+     * likelihood functions).
+     *
+     * @throws IllegalArgumentException on any violation
+     */
+    public static double[] readTimesCsv(Path path) {
+        List<String> lines = Csv.readCsvLines(path, "t");
+        double[] out = new double[lines.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String context = "time row " + (i + 1);
+            if (line.indexOf(',') >= 0) {
+                throw new IllegalArgumentException(
+                        "malformed " + context + ": expected 1 field: '" + line + "'");
+            }
+            out[i] = Csv.parseDoubleStrict(line, context);
+        }
+        return out;
+    }
+
+    /**
+     * Reads a two-column {@code t,type} CSV; types are validated to be 0 or 1.
+     *
+     * @throws IllegalArgumentException on any violation
+     */
+    public static BivSample readMarkedTimesCsv(Path path) {
+        List<String> lines = Csv.readCsvLines(path, "t,type");
+        double[] times = new double[lines.size()];
+        int[] types = new int[lines.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String context = "marked-time row " + (i + 1);
+            String[] parts = line.split(",", -1);
+            if (parts.length != 2) {
+                throw new IllegalArgumentException(
+                        "malformed " + context + ": expected 2 fields: '" + line + "'");
+            }
+            long k = Csv.parseInt64Strict(parts[1], context);
+            if (k != 0 && k != 1) {
+                throw new IllegalArgumentException("types must be 0 or 1, got " + k + " in " + context);
+            }
+            times[i] = Csv.parseDoubleStrict(parts[0], context);
+            types[i] = (int) k;
+        }
+        return new BivSample(times, types);
+    }
+
+    /**
+     * Writes event times with header {@code t}; every value round-trips
+     * exactly ({@link Double#toString}).
+     *
+     * @throws IllegalArgumentException on non-finite values
+     */
+    public static void writeTimesCsv(Path path, double[] times) {
+        StringBuilder sb = new StringBuilder("t\n");
+        for (double v : times) {
+            if (!Double.isFinite(v)) {
+                throw new IllegalArgumentException("times must be finite");
+            }
+            sb.append(Double.toString(v)).append('\n');
+        }
+        Csv.writeText(path, sb.toString());
+    }
+
+    /**
+     * Writes {@code t,type} rows (exact round-trip times, integer types 0/1).
+     *
+     * @throws IllegalArgumentException on non-finite times or invalid types
+     */
+    public static void writeMarkedTimesCsv(Path path, double[] times, int[] types) {
+        for (double v : times) {
+            if (!Double.isFinite(v)) {
+                throw new IllegalArgumentException("times must be finite");
+            }
+        }
+        checkTypes(types, times.length);
+        StringBuilder sb = new StringBuilder("t,type\n");
+        for (int i = 0; i < times.length; i++) {
+            sb.append(Double.toString(times[i])).append(',').append(types[i]).append('\n');
+        }
+        Csv.writeText(path, sb.toString());
     }
 }

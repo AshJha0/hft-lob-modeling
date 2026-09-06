@@ -22,7 +22,11 @@ execute immediately *rest* in the **limit order book** (LOB), organized as:
 - within each price level, a **FIFO queue** of resting orders.
 
 Prices live on a discrete grid of integer multiples of the **tick size**. In
-`lobmod` a price is internally an integer tick count; the bundled stream uses
+`lobmod` a price is internally a signed 64-bit integer tick count (a currency
+price is converted once, at the API boundary, by rounding half up and
+requiring `1 <= ticks <= 9e18` within a `1e-9` relative grid tolerance —
+anything else is an error, never a silent rescale or a tick-0 order); the
+event stream carries tick counts directly, and the bundled stream uses
 `tick_size = 1`.
 
 ### 1.2 Price-time priority and matching
@@ -102,8 +106,12 @@ exactly — book replay is pure integer bookkeeping, so tolerance 1e-12 is reall
   microstructure modeling therefore treats quotes as indicative, not firm.
 - Both markets share the mechanics modeled here (price-time priority within a
   venue), but equity data comes with consolidated tapes and clean event feeds
-  (ITCH-style add/cancel/execute messages — exactly the `L/C/M` schema of
-  `data/lob_events.csv`), while FX depth data is fragmented and often quote-based.
+  (ITCH-style add/cancel/execute messages — the `L/C/M` schema of
+  `data/lob_events.csv` covers ITCH's add (`A`), full delete (`D`) and the
+  aggressor side of executions; it does **not** model partial cancels /
+  reduces (`X`), replace with priority loss (`U`), executions against a
+  specific resting order (`E`/`C`), hidden or iceberg orders, or auctions),
+  while FX depth data is fragmented and often quote-based.
 
 ---
 
@@ -303,7 +311,8 @@ the same cross-check `generate_data.py` runs before writing goldens. Golden
 $(\mu,\alpha,\beta) = (0.4, 0.6, 1.2)$ on the bundled 1211 events.
 
 **Optimization.** The likelihood is maximized with the project's native
-Nelder-Mead (P02 configuration, pinned to the last coefficient and tie-break)
+Nelder-Mead (scipy-compatible configuration, pinned to the last coefficient
+and tie-break)
 over **log-transformed parameters** $x = (\log\mu, \log\alpha, \log\beta)$:
 positivity by construction, no constraint handling, and better-conditioned
 steps since the likelihood is closer to quadratic in logs. Any non-finite or
@@ -561,7 +570,12 @@ on entry, marked mid-to-mid. Golden `signal_pnl_after_costs`: **gross +45.0
 ticks, net −139.5 ticks over 177 trades**. The arithmetic is brutal and general:
 
 - Average gross edge per trade: $45/177 \approx 0.25$ ticks.
-- Average half-spread paid: mean spread ≈ 1.23 ticks ⇒ ≈ 0.6 ticks per trade.
+- Average half-spread paid: $(45.0 - (-139.5))/177 = 184.5/177 \approx 1.04$
+  ticks per trade. Note this is far above half the *global* mean spread
+  (1.23/2 ≈ 0.6 ticks): the mean spread on the rows where the classifier
+  actually fires is 2.08 ticks. Spread is one of the five features, and the
+  model fires disproportionately when the spread is wide — precisely the
+  states where crossing is most expensive.
 - Edge < cost, therefore net < 0. Predicting direction with 70% accuracy is
   *not enough* when most correct predictions are worth a fraction of the
   spread you pay to act on them.
@@ -618,6 +632,43 @@ axis:
 None of this invalidates the models — Hawkes intensities and OFI regressions
 are estimated *offline* on captured data in real firms too — but it locates
 them: research layer, not the trading loop.
+
+### 8.1 How a desk would use this
+
+A concrete, honest workflow for a market-microstructure research desk:
+
+1. **Reconstruct and audit.** Convert a captured feed into the `L/C/M`
+   schema with prices in *integer ticks* (`price_ticks = round(price /
+   tick)`; the library refuses off-grid prices, prices that round to 0 ticks,
+   and tick counts beyond 9e18, so a wrong `tick_size` fails loudly instead of
+   silently rescaling). `replay` then rebuilds top-of-book state after every
+   message; the size-conservation invariant in the tests is the check that
+   the capture was complete (every unit of limit size is rested, cancelled or
+   filled — a gap in the feed breaks it).
+2. **Calibrate event clustering.** Extract market-order timestamps per side
+   into the `t,type` schema and fit the bivariate Hawkes model
+   (`fit_biv`). Read the branching matrix: the diagonal is order splitting /
+   herding within a side, the off-diagonal the buy-sell feedback; the
+   spectral radius says how close the flow is to criticality (0.9+ is a
+   regime warning, not an error). Validate with the time-rescaling KS test
+   before trusting any of the numbers — a rejected fit is a mis-specified
+   kernel (try a different decay, or a sum of exponentials), not a smaller
+   p-value to report.
+3. **Screen signals, not strategies.** Build OFI / imbalance features on the
+   replayed states and train the deterministic classifier with a
+   *chronological* split. Use `signal_pnl` as a screening diagnostic only:
+   it is mid-to-mid, overlapping and charges half a spread on entry. If a
+   signal does not survive *that*, it will not survive fees, adverse
+   selection and latency; if it does, the next step is a proper event-driven
+   backtest with queue position and fill probability — outside this project.
+4. **Reproduce across languages.** The same goldens are asserted by the
+   Python, C++, Rust and Java ports, so a research result computed in Python
+   can be re-run in the production language and compared to 1e-8, which is
+   the practical reason the whole pipeline is pinned.
+
+What the library deliberately leaves to the desk: timestamps (all windows
+are in *events*), calendars and sessions, order-lifecycle messages beyond
+add/cancel/market, fees, latency, and any notion of "our" order in the queue.
 
 ---
 
@@ -713,9 +764,10 @@ linear in OFI with $R^2$ far above trade-count regressions.
 **Q7. Your LOB classifier scores 70% out-of-sample. Why might it still lose
 money?** (a) The base rate: majority class alone scores 66% — the model's
 genuine edge is a few points. (b) The predicted moves are sub-spread: ~0.25
-ticks gross per trade vs ~0.6 ticks half-spread cost — net negative (golden:
-+45.0 gross, −139.5 net). (c) Adverse selection and latency degrade realized
-fills below backtest assumptions. Accuracy is not PnL.
+ticks gross per trade vs ~1.04 ticks half-spread cost on the rows it trades
+(the signal fires when spreads are wide) — net negative (golden: +45.0 gross,
+−139.5 net over 177 trades). (c) Adverse selection and latency degrade
+realized fills below backtest assumptions. Accuracy is not PnL.
 
 **Q8. Why chronological rather than random train/test splits here?** Serial
 dependence and overlapping labels. Random splits interleave train and test

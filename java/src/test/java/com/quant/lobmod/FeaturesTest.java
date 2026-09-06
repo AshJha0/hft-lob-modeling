@@ -150,4 +150,20 @@ public class FeaturesTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new FeatureConfig(50, 20, 10, 0.25, 3, new int[] {0}, 0.1, 800, 0.7));
     }
+
+    // ------------------------------------------------------- review additions
+
+    @Test
+    public void ofiAtWindowBoundaryIsPinned() {
+        // PT-3: error iff eventIndex < window; eventIndex == window is valid
+        double[] mids = new double[10];
+        Arrays.fill(mids, 100.0);
+        BookStates st = statesFromMids(mids);
+        assertThrows(IllegalArgumentException.class, () -> Features.ofiAt(st, 3, 4));
+        double v = Features.ofiAt(st, 4, 4); // sums e_1..e_4: finite, zero
+        assertTrue(Double.isFinite(v));
+        assertEquals(0.0, v, 0.0);
+        assertThrows(IllegalArgumentException.class, () -> Features.ofiAt(st, 9, 10));
+        assertEquals(0.0, Features.ofiAt(st, 9, 9), 0.0);
+    }
 }

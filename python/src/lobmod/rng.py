@@ -17,28 +17,34 @@ from __future__ import annotations
 
 import math
 
+from ._validate import as_int, as_positive_int
+
 _A: int = 6364136223846793005
 _C: int = 1442695040888963407
 _MASK: int = (1 << 64) - 1
 _INV_2_53: float = 1.0 / (1 << 53)
+#: pinned seed domain: [0, MAX_SEED] (representable as a signed 64-bit
+#: integer in every port; never masked or wrapped)
+MAX_SEED: int = (1 << 63) - 1
 
 
 class Lcg64:
     """Pinned 64-bit LCG; the single source of randomness in ``lobmod``.
 
     Args:
-        seed: non-negative integer seed; the initial state is ``seed & (2^64-1)``.
+        seed: integer seed in ``[0, MAX_SEED]`` (``MAX_SEED = 2^63 - 1``);
+            the initial state is the seed itself.
 
     Raises:
-        ValueError: if ``seed`` is negative.
+        ValueError: if ``seed`` is not an integer, negative, or above
+            ``MAX_SEED`` (never silently masked).
     """
 
     def __init__(self, seed: int) -> None:
-        if not isinstance(seed, int) or isinstance(seed, bool):
-            raise ValueError("seed must be an integer")
-        if seed < 0:
-            raise ValueError(f"seed must be non-negative, got {seed}")
-        self._state: int = seed & _MASK
+        seed = as_int("seed", seed)
+        if seed < 0 or seed > MAX_SEED:
+            raise ValueError(f"seed must be in [0, {MAX_SEED}], got {seed}")
+        self._state: int = seed
 
     def next_u64(self) -> int:
         """Advance the state once and return it as an unsigned 64-bit integer."""
@@ -86,7 +92,6 @@ class Lcg64:
         Raises:
             ValueError: if ``n`` is not a positive integer.
         """
-        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
-            raise ValueError(f"n must be a positive integer, got {n}")
+        n = as_positive_int("n", n)
         k = int(self.uniform() * n)
         return n - 1 if k >= n else k

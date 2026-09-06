@@ -25,7 +25,8 @@ namespace lobmod {
 /// Pinned 64-bit LCG; the single source of randomness in lobmod.
 class Lcg64 {
 public:
-    /// \param seed non-negative seed; the initial state is the seed itself.
+    /// \param seed seed in [0, 2^63 - 1] (the pinned domain; negative is an
+    ///        error, nothing is masked); the initial state is the seed itself.
     explicit Lcg64(std::int64_t seed) {
         if (seed < 0) {
             throw std::invalid_argument("seed must be non-negative, got " +

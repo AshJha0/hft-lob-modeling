@@ -34,6 +34,10 @@ zone (pinned classes)::
 Rows are emitted only where every input is defined: ``i >= max(w_ofi,
 w_ret)``, ``i + H < n_events``, both book sides non-empty at every state the
 row touches, and all denominators positive.
+
+Windows, the return lookback and the label horizon are all counted in
+*events*, not clock time — the event schema carries no timestamps.  Prices
+and returns are in ticks.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from typing import Tuple
 
 import numpy as np
 
+from ._validate import as_int, as_positive_int, is_integer
 from .replay import BookStates
 
 #: pinned feature column order
@@ -82,17 +87,16 @@ class FeatureConfig:
 
     def __post_init__(self) -> None:
         for name in ("ofi_window", "ret_window", "horizon", "depth_k", "epochs"):
-            v = getattr(self, name)
-            if not isinstance(v, int) or isinstance(v, bool) or v <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {v}")
+            object.__setattr__(self, name, as_positive_int(name, getattr(self, name)))
         if not (math.isfinite(self.epsilon) and self.epsilon >= 0.0):
             raise ValueError(f"epsilon must be >= 0, got {self.epsilon}")
         if not (math.isfinite(self.learning_rate) and self.learning_rate > 0.0):
             raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
         if not (0.0 < self.train_frac < 1.0):
             raise ValueError(f"train_frac must be in (0, 1), got {self.train_frac}")
-        if any((not isinstance(h, int)) or h <= 0 for h in self.hidden):
+        if any((not is_integer(h)) or int(h) <= 0 for h in self.hidden):
             raise ValueError(f"hidden sizes must be positive integers, got {self.hidden}")
+        object.__setattr__(self, "hidden", tuple(int(h) for h in self.hidden))
 
 
 def load_feature_config(path: str) -> FeatureConfig:
@@ -166,16 +170,20 @@ def ofi_series(states: BookStates) -> np.ndarray:
 def ofi_at(states: BookStates, event_index: int, window: int) -> float:
     """OFI over the ``window`` events ending at ``event_index`` (0-based).
 
+    Pinned rule: error iff ``event_index < window`` — ``e_0`` is undefined,
+    so the earliest window of length ``w`` ends at event ``w`` (summing
+    ``e_1 .. e_w``).
+
     Raises:
-        ValueError: if the window does not fit (``event_index - window < 0``)
+        ValueError: if the window does not fit (``event_index < window``)
             or arguments are invalid.
     """
-    if not isinstance(window, int) or isinstance(window, bool) or window <= 0:
-        raise ValueError(f"window must be a positive integer, got {window}")
+    window = as_positive_int("window", window)
+    event_index = as_int("event_index", event_index)
     n = len(states)
     if not (0 <= event_index < n):
         raise ValueError(f"event_index {event_index} out of range [0, {n})")
-    if event_index - window < 0:
+    if event_index < window:
         raise ValueError(f"window {window} does not fit before event {event_index}")
     e = ofi_series(states)
     return float(np.sum(e[event_index - window + 1: event_index + 1]))
@@ -235,7 +243,8 @@ def chronological_split(n: int, train_frac: float) -> Tuple[np.ndarray, np.ndarr
     Raises:
         ValueError: if the split would leave either side empty.
     """
-    if not isinstance(n, int) or isinstance(n, bool) or n <= 1:
+    n = as_int("n", n)
+    if n <= 1:
         raise ValueError(f"n must be an integer > 1, got {n}")
     if not (0.0 < train_frac < 1.0):
         raise ValueError(f"train_frac must be in (0, 1), got {train_frac}")

@@ -13,6 +13,7 @@ set(LOBMOD_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../data")
 
 add_library(lobmod
     src/book.cpp
+    src/csv.cpp
     src/replay.cpp
     src/zi.cpp
     src/neldermead.cpp

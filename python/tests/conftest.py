@@ -44,13 +44,12 @@ def states(events, cfg) -> lm.BookStates:
 
 @pytest.fixture(scope="session")
 def uni_times() -> np.ndarray:
-    return np.loadtxt(os.path.join(DATA_DIR, "hawkes_uni.csv"), skiprows=1)
+    return lm.read_times_csv(os.path.join(DATA_DIR, "hawkes_uni.csv"))
 
 
 @pytest.fixture(scope="session")
 def biv_data():
-    raw = np.loadtxt(os.path.join(DATA_DIR, "hawkes_biv.csv"), skiprows=1, delimiter=",")
-    return raw[:, 0], raw[:, 1].astype(int)
+    return lm.read_marked_times_csv(os.path.join(DATA_DIR, "hawkes_biv.csv"))
 
 
 @pytest.fixture(scope="session")

@@ -13,9 +13,11 @@
 /// over the sorted sample, and the asymptotic p-value uses the Stephens
 /// small-sample correction lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * D_n
 /// and the Kolmogorov tail series 2 sum_{j=1..100} (-1)^{j-1}
-/// exp(-2 j^2 lambda^2), clipped to [0, 1] — pinned at exactly 100 terms.
-/// With very small n the asymptotic p-value is indicative only (documented,
-/// not an error).
+/// exp(-2 j^2 lambda^2) for lambda >= 0.1, or the dual form
+/// 1 - (sqrt(2 pi)/lambda) sum_{j=1..100} exp(-(2j-1)^2 pi^2 / (8 lambda^2))
+/// for lambda < 0.1 (where the alternating series converges too slowly),
+/// clipped to [0, 1] — both pinned at exactly 100 terms.  With very small n
+/// the asymptotic p-value is indicative only (documented, not an error).
 
 #include <cstddef>
 #include <utility>
@@ -33,6 +35,10 @@ double ks_statistic_exp(const std::vector<double>& sample);
 /// \throws std::domain_error if d is outside [0, 1].
 /// \throws std::invalid_argument if n <= 0.
 double ks_pvalue(double d, long long n);
+
+/// Kolmogorov tail probability Q(lambda) by the pinned two-branch evaluation
+/// (exposed for tests; lambda >= 0).
+double kolmogorov_q(double lam);
 
 /// KS test of a sample against Exp(1): returns (statistic, p_value).
 std::pair<double, double> ks_test_exp(const std::vector<double>& sample);

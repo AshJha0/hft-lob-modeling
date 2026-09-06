@@ -162,6 +162,52 @@ impl FeatureSet {
     pub fn is_empty(&self) -> bool {
         self.y.is_empty()
     }
+
+    fn check_range(&self, rows: &std::ops::Range<usize>) -> Result<()> {
+        if rows.start > rows.end || rows.end > self.len() {
+            return Err(LobError::InvalidInput(format!(
+                "row range {rows:?} out of bounds for {} rows",
+                self.len()
+            )));
+        }
+        Ok(())
+    }
+
+    /// The feature rows in `rows` (e.g. a [`chronological_split`] range) as a
+    /// new matrix.
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if the range is out of bounds.
+    pub fn x_rows(&self, rows: &std::ops::Range<usize>) -> Result<Matrix> {
+        self.x.slice_rows(rows.start, rows.end)
+    }
+
+    /// The labels in `rows`.
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if the range is out of bounds.
+    pub fn y_rows(&self, rows: &std::ops::Range<usize>) -> Result<Vec<usize>> {
+        self.check_range(rows)?;
+        Ok(self.y[rows.clone()].to_vec())
+    }
+
+    /// The forward returns in `rows`.
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if the range is out of bounds.
+    pub fn fwd_ret_rows(&self, rows: &std::ops::Range<usize>) -> Result<Vec<f64>> {
+        self.check_range(rows)?;
+        Ok(self.fwd_ret[rows.clone()].to_vec())
+    }
+
+    /// The decision-time spreads in `rows`.
+    ///
+    /// # Errors
+    /// [`LobError::InvalidInput`] if the range is out of bounds.
+    pub fn spread_rows(&self, rows: &std::ops::Range<usize>) -> Result<Vec<f64>> {
+        self.check_range(rows)?;
+        Ok(self.spread[rows.clone()].to_vec())
+    }
 }
 
 /// Per-event order-flow contributions `e_n` (module docs formula).
@@ -196,6 +242,9 @@ pub fn ofi_series(states: &BookStates) -> Vec<f64> {
 }
 
 /// OFI over the `window` events ending at `event_index` (0-based).
+///
+/// Pinned rule: error iff `event_index < window` (`e_0` is undefined);
+/// `event_index == window` is the first valid index and sums `e_1 .. e_w`.
 ///
 /// # Errors
 /// [`LobError::InvalidInput`] if the window does not fit
@@ -290,7 +339,7 @@ pub fn compute_features(states: &BookStates, cfg: &FeatureConfig) -> Result<Feat
     }
     let rows = y.len();
     Ok(FeatureSet {
-        x: Matrix::from_vec(rows, 5, x_data),
+        x: Matrix::from_vec(rows, 5, x_data)?,
         y,
         event_index,
         fwd_ret,

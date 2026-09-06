@@ -203,4 +203,67 @@ public class NnTest {
                 () -> Metrics.signalPnl(new int[] {1}, new double[] {Double.NaN}, new double[] {1.0}));
         assertThrows(IllegalArgumentException.class, () -> Metrics.majorityClass(new int[0]));
     }
+
+    // ------------------------------------------------------- review additions
+
+    @Test
+    public void signalPnlRejectsInvalidLabels() {
+        // PT-5 (and the former Java-only cost divergence on invalid labels)
+        assertThrows(IllegalArgumentException.class,
+                () -> Metrics.signalPnl(new int[] {3}, new double[] {1.0}, new double[] {1.0}));
+        assertThrows(IllegalArgumentException.class,
+                () -> Metrics.signalPnl(new int[] {-1}, new double[] {1.0}, new double[] {1.0}));
+        Metrics.Pnl pnl = Metrics.signalPnl(new int[] {2, 0, 1}, new double[] {1.0, -2.0, 5.0},
+                new double[] {1.0, 1.0, 1.0});
+        assertEquals(3.0, pnl.gross(), 0.0);
+        assertEquals(2.0, pnl.net(), 0.0);
+        assertEquals(2, pnl.nTrades());
+    }
+
+    private static double fdWorst(Mlp net, double[][] x, int[] y) {
+        Mlp.Grads grads = net.lossAndGrads(x, y);
+        double h = 1e-6;
+        double worst = 0.0;
+        for (int l = 0; l < net.weights.size(); l++) {
+            double[][] w = net.weights.get(l);
+            for (int i = 0; i < w.length; i++) {
+                for (int j = 0; j < w[i].length; j++) {
+                    double orig = w[i][j];
+                    w[i][j] = orig + h;
+                    double up = net.loss(x, y);
+                    w[i][j] = orig - h;
+                    double down = net.loss(x, y);
+                    w[i][j] = orig;
+                    double fd = (up - down) / (2.0 * h);
+                    double g = grads.gradsW()[l][i][j];
+                    worst = Math.max(worst, Math.abs(fd - g) / Math.max(1.0, Math.max(Math.abs(fd), Math.abs(g))));
+                }
+            }
+            double[] b = net.biases.get(l);
+            for (int j = 0; j < b.length; j++) {
+                double orig = b[j];
+                b[j] = orig + h;
+                double up = net.loss(x, y);
+                b[j] = orig - h;
+                double down = net.loss(x, y);
+                b[j] = orig;
+                double fd = (up - down) / (2.0 * h);
+                double g = grads.gradsB()[l][j];
+                worst = Math.max(worst, Math.abs(fd - g) / Math.max(1.0, Math.max(Math.abs(fd), Math.abs(g))));
+            }
+        }
+        return worst;
+    }
+
+    @Test
+    public void gradientCheckLogisticHeadAndTwoClassNet() {
+        // PT-14: the l == 0 early exit of backprop (no hidden layer) and a 2-class head
+        assertTrue(fdWorst(new Mlp(3, new int[] {}, 3), tinyX(), tinyY()) < 1e-6);
+        int[] y2 = new int[12];
+        int[] y = tinyY();
+        for (int i = 0; i < 12; i++) {
+            y2[i] = y[i] > 0 ? 1 : 0;
+        }
+        assertTrue(fdWorst(new Mlp(3, new int[] {3}, 2), tinyX(), y2) < 1e-6);
+    }
 }

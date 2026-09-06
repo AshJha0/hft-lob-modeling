@@ -16,6 +16,16 @@
 ///
 /// Quantities needing both sides (mid, spread, microprice) return NaN when a
 /// side is empty (guarded, never a crash).
+///
+/// Tick conversion (pinned, identical in every port): ratio = price / tick,
+/// rounded half up; accepted iff |ratio - ticks| <= 1e-9 * max(1, ratio) and
+/// 1 <= ticks <= kMaxTicks (9e18).  A price that rounds to 0 ticks or would
+/// overflow a signed 64-bit tick count is an error — never a negative price
+/// and never an unbounded market order.  limit_ticks() takes the integer
+/// tick count directly (the replay path).
+///
+/// Memory: trades() and log() grow for the life of the book; construct with
+/// record_trades = false or call clear_history() for long sessions.
 
 #include <cstdint>
 #include <deque>
@@ -26,6 +36,9 @@
 #include <vector>
 
 namespace lobmod {
+
+/// Largest accepted tick count / size (fits a signed 64-bit integer).
+constexpr std::int64_t kMaxTicks = 9000000000000000000LL;
 
 /// One execution against a resting order.
 struct Fill {
@@ -53,8 +66,10 @@ public:
 
     /// \param tick_size positive finite tick; every incoming price must be an
     ///        integer multiple of it (validated to 1e-9 relative precision).
+    /// \param record_trades keep every Fill in trades() and every event in
+    ///        log(); false disables both (matching is unaffected).
     /// \throws std::invalid_argument on a non-positive or non-finite tick.
-    explicit LimitOrderBook(double tick_size = 1.0);
+    explicit LimitOrderBook(double tick_size = 1.0, bool record_trades = true);
 
     /// Highest bid price in ticks, or nullopt if the bid side is empty.
     std::optional<std::int64_t> best_bid() const;
@@ -99,6 +114,14 @@ public:
     std::pair<std::vector<Fill>, std::int64_t>
     limit(char side, double price, std::int64_t size, std::int64_t order_id);
 
+    /// Submit a limit order priced directly in ticks (no float conversion);
+    /// identical semantics to limit().  price_ticks must lie in
+    /// [1, kMaxTicks].
+    /// \throws std::invalid_argument as limit().
+    std::pair<std::vector<Fill>, std::int64_t>
+    limit_ticks(char side, std::int64_t price_ticks, std::int64_t size,
+                std::int64_t order_id);
+
     /// Cancel a resting order by id; returns the size removed.
     /// \throws std::invalid_argument if the id is not live (never rested,
     ///         already cancelled, or fully filled).
@@ -116,6 +139,10 @@ public:
     const std::vector<BookLogEntry>& log() const { return log_; }
     /// The validated tick size.
     double tick_size() const { return tick_size_; }
+    /// Whether fills/events are being recorded.
+    bool record_trades() const { return record_trades_; }
+    /// Drop the accumulated trades() and log() (book unchanged).
+    void clear_history();
 
 private:
     struct Order {
@@ -126,12 +153,14 @@ private:
     using Side = std::map<std::int64_t, Level>; // price ticks -> FIFO queue
 
     std::int64_t to_ticks(double price) const;
+    static std::int64_t check_ticks(std::int64_t ticks);
     static void check_side(char side);
     static void check_size(std::int64_t size);
     std::pair<std::vector<Fill>, std::int64_t>
     match(char side, std::int64_t size, const std::int64_t* limit_ticks);
 
     double tick_size_;
+    bool record_trades_;
     Side bids_;
     Side asks_;
     /// order id -> (side, price ticks) for live resting orders

@@ -163,3 +163,17 @@ fn feature_config_validation() {
     assert!(bad.validate().is_err());
     assert!(load_feature_config("/nonexistent.json").is_err());
 }
+
+// ---------------------------------------------------------------- review additions
+
+#[test]
+fn ofi_at_window_boundary_is_pinned() {
+    // PT-3: error iff event_index < window; event_index == window is valid
+    let st = constant_states(10);
+    assert!(ofi_at(&st, 3, 4).is_err());
+    let v = ofi_at(&st, 4, 4).unwrap(); // sums e_1..e_4: finite, zero
+    assert!(v.is_finite());
+    assert_eq!(v, 0.0);
+    assert!(ofi_at(&st, 9, 10).is_err());
+    assert_eq!(ofi_at(&st, 9, 9).unwrap(), 0.0);
+}

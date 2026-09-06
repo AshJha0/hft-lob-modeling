@@ -51,21 +51,12 @@ pub fn check_case(case: &Value, computed: &[(&str, f64)]) {
     }
 }
 
-/// Read a one-column (`t`) or two-column (`t,type`) Hawkes CSV.
-pub fn read_hawkes_csv(name: &str) -> (Vec<f64>, Vec<usize>) {
-    let path = data_path(name);
-    let text = fs::read_to_string(&path).expect("hawkes csv readable");
-    let mut times = Vec::new();
-    let mut types = Vec::new();
-    for line in text.lines().skip(1) {
-        if line.is_empty() {
-            continue;
-        }
-        let mut parts = line.split(',');
-        times.push(parts.next().unwrap().parse::<f64>().expect("time"));
-        if let Some(k) = parts.next() {
-            types.push(k.parse::<usize>().expect("type"));
-        }
-    }
-    (times, types)
+/// Bundled univariate Hawkes event times (via the library reader).
+pub fn uni_times() -> Vec<f64> {
+    lobmod::read_times_csv(&data_path("hawkes_uni.csv")).expect("hawkes_uni.csv readable")
+}
+
+/// Bundled bivariate Hawkes stream (via the library reader).
+pub fn biv_data() -> (Vec<f64>, Vec<usize>) {
+    lobmod::read_marked_times_csv(&data_path("hawkes_biv.csv")).expect("hawkes_biv.csv readable")
 }

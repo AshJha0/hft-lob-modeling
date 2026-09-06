@@ -58,8 +58,8 @@ pub fn generate_events(n_events: usize, seed: u64) -> Result<Vec<Event>> {
             "n_events must be an integer >= 12, got {n_events}"
         )));
     }
-    let mut rng = Lcg64::new(seed);
-    let mut book = LimitOrderBook::new(1.0)?;
+    let mut rng = Lcg64::new(seed)?;
+    let mut book = LimitOrderBook::with_options(1.0, false)?;
     let mut events: Vec<Event> = Vec::with_capacity(n_events);
 
     fn emit(

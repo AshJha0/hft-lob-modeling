@@ -165,3 +165,67 @@ def test_nn_validation_errors():
         lm.MLP(5, (4, -1), 3)
     with pytest.raises(ValueError):
         lm.signal_pnl(np.array([1]), np.array([1.0, 2.0]), np.array([1.0]))
+
+
+# ----------------------------------------------------------- review additions
+
+def test_signal_pnl_rejects_invalid_labels():
+    """PT-5: only {0, 1, 2} are positions; anything else is an error."""
+    with pytest.raises(ValueError, match="y_pred"):
+        lm.signal_pnl([3], [1.0], [1.0])
+    with pytest.raises(ValueError, match="y_pred"):
+        lm.signal_pnl([-1], [1.0], [1.0])
+    with pytest.raises(ValueError, match="y_pred"):
+        lm.signal_pnl([1.5], [1.0], [1.0])  # never truncated to 1
+    gross, net, n = lm.signal_pnl([2, 0, 1], [1.0, -2.0, 5.0], [1.0, 1.0, 1.0])
+    assert gross == pytest.approx(3.0) and net == pytest.approx(2.0) and n == 2
+    # numpy integer labels and exact-integer floats are accepted
+    gross2, net2, n2 = lm.signal_pnl(np.array([2.0, 0.0, 1.0]), [1.0, -2.0, 5.0], [1.0, 1.0, 1.0])
+    assert (gross2, net2, n2) == (gross, net, n)
+
+
+def _fd_check(net, x, y, h=1e-6):
+    _, gw, gb = net.loss_and_grads(x, y)
+    worst = 0.0
+    for l in range(len(net.weights)):
+        for idx in np.ndindex(net.weights[l].shape):
+            w0 = net.weights[l][idx]
+            net.weights[l][idx] = w0 + h
+            lp = net.loss(x, y)
+            net.weights[l][idx] = w0 - h
+            lo = net.loss(x, y)
+            net.weights[l][idx] = w0
+            fd = (lp - lo) / (2 * h)
+            worst = max(worst, abs(fd - gw[l][idx]) / max(1.0, abs(fd), abs(gw[l][idx])))
+        for j in range(net.biases[l].size):
+            b0 = net.biases[l][j]
+            net.biases[l][j] = b0 + h
+            lp = net.loss(x, y)
+            net.biases[l][j] = b0 - h
+            lo = net.loss(x, y)
+            net.biases[l][j] = b0
+            fd = (lp - lo) / (2 * h)
+            worst = max(worst, abs(fd - gb[l][j]) / max(1.0, abs(fd), abs(gb[l][j])))
+    return worst
+
+
+def test_gradient_check_logistic_head_and_two_class_net():
+    """PT-14: the l == 0 early exit of backprop (no hidden layer) and a 2-class head."""
+    x, y = toy_data(12)
+    assert _fd_check(lm.MLP(5, (), 3), x, y) < 1e-6
+    x2 = x[:, :4]
+    y2 = (y > 0).astype(int)  # two classes
+    assert _fd_check(lm.MLP(4, (3,), 2), x2, y2) < 1e-6
+
+
+def test_labels_are_never_truncated():
+    x, y = toy_data(10)
+    net = lm.MLP(5, (4,), 3)
+    with pytest.raises(ValueError, match="integers"):
+        net.fit(x, np.full(10, 1.7), 0.1, 1)
+    with pytest.raises(ValueError, match="integers"):
+        lm.majority_class(np.array([0.5, 1.5]))
+    with pytest.raises(ValueError, match="epochs"):
+        net.fit(x, y, 0.1, 2.5)
+    hist = net.fit(x, y.astype(float), 0.1, np.int64(2))  # exact-integer floats are fine
+    assert len(hist) == 2

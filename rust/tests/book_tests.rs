@@ -5,8 +5,8 @@
 mod common;
 
 use lobmod::{
-    apply_event, generate_events, read_events_csv, replay, EventType, LimitOrderBook, LobError,
-    Side,
+    apply_event, generate_events, read_events_csv, replay, write_events_csv, EventType, Fill,
+    Lcg64, LimitOrderBook, LobError, Side, MAX_SEED, MAX_TICKS,
 };
 
 fn book() -> LimitOrderBook {
@@ -222,9 +222,9 @@ fn tick_validation() {
 
 #[test]
 fn replay_records_after_each_event_and_rejects_empty() {
-    assert!(replay(&[], 3, 1.0).is_err());
+    assert!(replay(&[], 3).is_err());
     let events = read_events_csv(&common::data_path("lob_events.csv")).expect("events");
-    let st = replay(&events[..20], 3, 1.0).expect("replay prefix");
+    let st = replay(&events[..20], 3).expect("replay prefix");
     assert_eq!(st.len(), 20);
     // after the 12-event seed phase: bids 994..999, asks 1001..1006, size 10 each
     assert_eq!(st.best_bid[11], 999.0);
@@ -255,4 +255,202 @@ fn read_events_csv_rejects_bad_input() {
     .unwrap();
     assert!(read_events_csv(bad_type.to_str().unwrap()).is_err());
     assert!(read_events_csv("/nonexistent/path.csv").is_err());
+}
+
+// ---------------------------------------------------------------- review additions
+
+fn scratch(name: &str, text: &str) -> String {
+    let path = std::env::temp_dir().join(format!("lobmod_rs_{name}"));
+    std::fs::write(&path, text).expect("scratch file");
+    path.to_string_lossy().into_owned()
+}
+
+#[test]
+fn price_rounding_to_zero_ticks_rejected() {
+    // PT-1
+    let mut b = book();
+    assert!(b.limit(Side::Bid, 1e-12, 5, 1).is_err());
+    let mut b2 = LimitOrderBook::new(0.01).unwrap();
+    assert!(b2.limit(Side::Ask, 4e-12, 1, 2).is_err());
+    for bk in [&b, &b2] {
+        assert!(bk.best_bid().is_none() && bk.best_ask().is_none());
+        assert_eq!(bk.n_orders(Side::Bid) + bk.n_orders(Side::Ask), 0);
+        assert!(bk.trades.is_empty());
+    }
+    assert!(b.limit_ticks(Side::Bid, 0, 5, 1).is_err());
+    assert!(b.limit_ticks(Side::Bid, -5, 5, 1).is_err());
+}
+
+#[test]
+fn large_tick_counts() {
+    // PT-2: fine-tick products need 64-bit tick counts; overflow is an error
+    let mut b = LimitOrderBook::new(1e-8).unwrap();
+    let (f1, r1) = b.limit(Side::Ask, 60000.0, 1, 1).unwrap();
+    assert!(f1.is_empty() && r1 == 1);
+    assert_eq!(b.best_ask(), Some(6_000_000_000_000));
+    let (f2, r2) = b.limit(Side::Bid, 60000.0, 1, 2).unwrap();
+    assert_eq!(f2, vec![Fill { maker_id: 1, price: 6_000_000_000_000, size: 1 }]);
+    assert_eq!(r2, 0);
+    assert!(b.best_ask().is_none() && b.best_bid().is_none());
+    assert!(b.limit(Side::Bid, 1e300, 1, 3).is_err()); // no saturation, no sweep
+    assert!(b.best_bid().is_none());
+    assert!(b.limit(Side::Bid, 1e19, 1, 3).is_err());
+    assert!(b.limit_ticks(Side::Bid, MAX_TICKS + 1, 1, 3).is_err());
+    b.limit_ticks(Side::Bid, MAX_TICKS, 1, 3).unwrap();
+    assert_eq!(b.best_bid(), Some(MAX_TICKS));
+}
+
+#[test]
+fn tick_rounding_rule_is_half_up_within_tolerance() {
+    let mut b = LimitOrderBook::new(0.5).unwrap();
+    b.limit(Side::Bid, 99.5, 1, 1).unwrap();
+    assert_eq!(b.best_bid(), Some(199));
+    b.limit(Side::Bid, 100.0000000001, 1, 2).unwrap(); // residual 2e-10 <= 1e-9 * 200
+    assert_eq!(b.best_bid(), Some(200));
+    assert!(b.limit(Side::Bid, 100.004, 1, 3).is_err());
+    assert!(b.limit(Side::Bid, 0.75, 1, 3).is_err()); // exactly 1.5 ticks: off-grid
+}
+
+#[test]
+fn limit_ticks_matches_limit() {
+    let mut a = LimitOrderBook::new(0.25).unwrap();
+    let mut c = LimitOrderBook::new(0.25).unwrap();
+    a.limit(Side::Ask, 25.5, 4, 1).unwrap();
+    c.limit_ticks(Side::Ask, 102, 4, 1).unwrap();
+    assert_eq!(a.best_ask(), Some(102));
+    assert_eq!(c.best_ask(), Some(102));
+    let (fa, ra) = a.limit(Side::Bid, 26.0, 6, 2).unwrap();
+    let (fc, rc) = c.limit_ticks(Side::Bid, 104, 6, 2).unwrap();
+    assert_eq!(fa, fc);
+    assert_eq!((ra, rc), (2, 2));
+}
+
+#[test]
+fn replay_prices_are_tick_counts() {
+    // PT-4: Event.price is in ticks; replay never rescales it
+    let events = read_events_csv(&common::data_path("lob_events.csv")).expect("events");
+    let st = replay(&events[..12], 3).unwrap();
+    assert_eq!(st.best_bid[11], 999.0);
+    assert_eq!(st.best_ask[11], 1001.0);
+    let mut manual = LimitOrderBook::new(0.5).unwrap();
+    for e in &events[..12] {
+        manual
+            .limit(e.side, e.price as f64 * 0.5, e.size, e.order_id)
+            .unwrap();
+    }
+    assert_eq!(manual.best_bid(), Some(999));
+    assert!(replay(&events[..12], 0).is_err());
+}
+
+#[test]
+fn depth_monotone_in_k_over_replay() {
+    // PT-11
+    let events = read_events_csv(&common::data_path("lob_events.csv")).expect("events");
+    let mut book = book();
+    for e in &events[..500] {
+        apply_event(&mut book, e).unwrap();
+        assert_eq!(book.depth(Side::Bid, 1).unwrap(), book.best_bid_size());
+        assert_eq!(book.depth(Side::Ask, 1).unwrap(), book.best_ask_size());
+        for side in [Side::Bid, Side::Ask] {
+            for k in 1..=5 {
+                assert!(book.depth(side, k).unwrap() <= book.depth(side, k + 1).unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn market_on_empty_book_and_reuse_of_cancelled_id() {
+    // PT-12
+    let mut b = book();
+    assert_eq!(b.market(Side::Bid, 5).unwrap(), (vec![], 5));
+    assert_eq!(b.market(Side::Ask, 3).unwrap(), (vec![], 3));
+    b.limit(Side::Bid, 100.0, 2, 7).unwrap();
+    assert_eq!(b.cancel(7).unwrap(), 2);
+    let (fills, rested) = b.limit(Side::Ask, 101.0, 4, 7).unwrap(); // id free again
+    assert!(fills.is_empty() && rested == 4 && b.has_order(7));
+}
+
+#[test]
+fn crossed_sell_limit_stops_at_its_price_and_price_improvement() {
+    // PT-13
+    let mut b = book();
+    b.limit(Side::Bid, 100.0, 4, 1).unwrap();
+    b.limit(Side::Bid, 99.0, 4, 2).unwrap();
+    let (fills, rested) = b.limit(Side::Ask, 100.0, 10, 3).unwrap();
+    assert_eq!(fills, vec![Fill { maker_id: 1, price: 100, size: 4 }]);
+    assert_eq!(rested, 6);
+    assert_eq!((b.best_ask(), b.best_bid()), (Some(100), Some(99)));
+    assert_eq!(b.best_bid_size(), 4); // the 99 bid was never touched
+    let (fills, rested) = b.limit(Side::Ask, 95.0, 2, 4).unwrap(); // executes at the resting 99
+    assert_eq!(fills, vec![Fill { maker_id: 2, price: 99, size: 2 }]);
+    assert_eq!(rested, 0);
+}
+
+#[test]
+fn record_trades_flag_and_clear_history() {
+    let mut b = LimitOrderBook::with_options(1.0, false).unwrap();
+    b.limit(Side::Ask, 101.0, 5, 1).unwrap();
+    let (fills, _) = b.market(Side::Bid, 2).unwrap();
+    assert_eq!(fills.len(), 1);
+    assert!(b.trades.is_empty() && !b.record_trades());
+    assert_eq!(b.best_ask_size(), 3); // matching unaffected
+    let mut c = book();
+    c.limit(Side::Ask, 101.0, 5, 1).unwrap();
+    c.market(Side::Bid, 2).unwrap();
+    assert_eq!(c.trades.len(), 1);
+    c.clear_history();
+    assert!(c.trades.is_empty());
+    assert_eq!(c.best_ask_size(), 3);
+}
+
+#[test]
+fn seed_domain_is_pinned() {
+    assert!(Lcg64::new(0).is_ok());
+    assert!(Lcg64::new(MAX_SEED).is_ok());
+    assert!(Lcg64::new(MAX_SEED + 1).is_err()); // never silently accepted
+    assert!(generate_events(12, u64::MAX).is_err());
+}
+
+#[test]
+fn events_csv_robustness() {
+    // PT-15: the pinned CSV rules
+    let body = "seq,type,side,price,size,order_id\n1,L,B,999,10,1\n2,L,S,1001,10,2\n";
+    let ok = read_events_csv(&scratch("ok.csv", body)).unwrap();
+    assert_eq!(ok.len(), 2);
+    assert_eq!((ok[1].price, ok[1].side), (1001, Side::Ask));
+    let crlf = body.replace('\n', "\r\n");
+    assert_eq!(read_events_csv(&scratch("crlf.csv", &crlf)).unwrap(), ok);
+    assert_eq!(read_events_csv(&scratch("trail.csv", &format!("{body}\n\n"))).unwrap(), ok);
+    assert_eq!(read_events_csv(&scratch("noeol.csv", body.trim_end())).unwrap(), ok);
+    let bad = [
+        ("comma.csv", format!("{body}3,M,B,0,2,0,\n")),
+        ("float.csv", format!("{body}3,L,B,999.5,1,3\n")),
+        ("space.csv", format!("{body}3, L,B,999,1,3\n")),
+        ("plus.csv", format!("{body}3,L,B,+999,1,3\n")),
+        ("type.csv", format!("{body}3,X,B,999,1,3\n")),
+        ("side.csv", format!("{body}3,L,Q,999,1,3\n")),
+        (
+            "blank.csv",
+            "seq,type,side,price,size,order_id\n1,L,B,999,10,1\n\n2,L,S,1001,10,2\n".to_string(),
+        ),
+        ("header.csv", "seq,side,type,price,size,order_id\n1,B,L,999,10,1\n".to_string()),
+        ("empty.csv", String::new()),
+        ("big.csv", format!("{body}3,L,B,9223372036854775808,1,3\n")),
+    ];
+    for (name, text) in &bad {
+        assert!(read_events_csv(&scratch(name, text)).is_err(), "{name}");
+    }
+    assert!(read_events_csv("/nonexistent/dir/x.csv").is_err());
+}
+
+#[test]
+fn events_csv_round_trip_is_byte_identical() {
+    let events = read_events_csv(&common::data_path("lob_events.csv")).expect("events");
+    let path = scratch("stream.csv", "");
+    write_events_csv(&path, &events).unwrap();
+    assert_eq!(read_events_csv(&path).unwrap(), events);
+    let written = std::fs::read(&path).unwrap();
+    let bundled = std::fs::read(common::data_path("lob_events.csv")).unwrap();
+    assert_eq!(written, bundled);
 }

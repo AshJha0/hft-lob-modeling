@@ -17,11 +17,17 @@ iid Exp(1) draws.  This module tests that natively:
 
   the p-value is the Kolmogorov tail series
 
-      Q(lambda) = 2 * sum_{j=1}^{100} (-1)^{j-1} exp(-2 j^2 lambda^2),
+      Q(lambda) = 2 * sum_{j=1}^{100} (-1)^{j-1} exp(-2 j^2 lambda^2)     (lambda >= 0.1)
 
-  clipped to ``[0, 1]``.  The series is pinned at exactly 100 terms (it
-  converges to machine precision long before that for any lambda of
-  interest).  With very small n the asymptotic p-value is only indicative —
+  clipped to ``[0, 1]``.  That alternating series converges slowly as
+  lambda -> 0 (100 terms are off by 0.13 at lambda = 0.01), so for
+  ``lambda < 0.1`` the pinned evaluation switches to the dual (Jacobi theta)
+  form, Numerical Recipes eq. 14.3.20,
+
+      Q(lambda) = 1 - (sqrt(2 pi) / lambda) * sum_{j=1}^{100} exp(-(2j-1)^2 pi^2 / (8 lambda^2)),
+
+  whose terms vanish for small lambda.  Both branches use exactly 100 terms
+  (pinned).  With very small n the asymptotic p-value is only indicative —
   callers should treat it as such (documented, not an error).
 """
 
@@ -31,6 +37,12 @@ import math
 from typing import Sequence, Tuple
 
 import numpy as np
+
+from ._validate import as_positive_int
+
+#: pinned switch point between the two Kolmogorov series
+_LAMBDA_SWITCH = 0.1
+_N_TERMS = 100
 
 
 def ks_statistic_exp(sample: Sequence[float]) -> float:
@@ -56,25 +68,37 @@ def ks_statistic_exp(sample: Sequence[float]) -> float:
 def ks_pvalue(d: float, n: int) -> float:
     """Asymptotic Kolmogorov p-value for statistic ``d`` on ``n`` points.
 
-    Pinned formula: ``lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * d`` and the
-    100-term alternating tail series (module docstring), clipped to [0, 1].
+    Pinned formula: ``lambda = (sqrt(n) + 0.12 + 0.11/sqrt(n)) * d``, then the
+    100-term alternating tail series for ``lambda >= 0.1`` or the 100-term
+    dual form for ``lambda < 0.1`` (module docstring), clipped to [0, 1].
 
     Raises:
         ValueError: if ``d`` is not in [0, 1] or ``n`` is not positive.
     """
-    if not (math.isfinite(d) and 0.0 <= d <= 1.0):
+    if isinstance(d, bool) or not (math.isfinite(d) and 0.0 <= d <= 1.0):
         raise ValueError(f"d must be in [0, 1], got {d}")
-    if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
-        raise ValueError(f"n must be a positive integer, got {n}")
+    n = as_positive_int("n", n)
     if d == 0.0:
         return 1.0
     sqrt_n = math.sqrt(n)
     lam = (sqrt_n + 0.12 + 0.11 / sqrt_n) * d
-    total = 0.0
-    for j in range(1, 101):
-        term = math.exp(-2.0 * j * j * lam * lam)
-        total += term if j % 2 == 1 else -term
-    p = 2.0 * total
+    return _kolmogorov_q(lam)
+
+
+def _kolmogorov_q(lam: float) -> float:
+    """Kolmogorov tail probability ``Q(lambda)`` (pinned two-branch evaluation)."""
+    if lam < _LAMBDA_SWITCH:
+        total = 0.0
+        for j in range(1, _N_TERMS + 1):
+            m = 2 * j - 1
+            total += math.exp(-(m * m) * math.pi * math.pi / (8.0 * lam * lam))
+        p = 1.0 - (math.sqrt(2.0 * math.pi) / lam) * total
+    else:
+        total = 0.0
+        for j in range(1, _N_TERMS + 1):
+            term = math.exp(-2.0 * j * j * lam * lam)
+            total += term if j % 2 == 1 else -term
+        p = 2.0 * total
     return min(1.0, max(0.0, p))
 
 

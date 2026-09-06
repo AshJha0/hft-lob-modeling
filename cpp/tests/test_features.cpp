@@ -139,4 +139,28 @@ TEST(Features, ChronologicalSplit) {
     EXPECT_THROW(lobmod::chronological_split(3, 0.01), std::invalid_argument);
 }
 
+// ------------------------------------------------------------ review additions
+
+TEST(Ofi, WindowBoundaryIsPinned) {
+    // PT-3: error iff event_index < window; event_index == window is valid
+    lobmod::BookStates st;
+    for (int i = 0; i < 10; ++i) {
+        st.best_bid.push_back(100.0);
+        st.best_ask.push_back(101.0);
+        st.bid_size.push_back(5.0);
+        st.ask_size.push_back(5.0);
+        st.bid_depth_k.push_back(5.0);
+        st.ask_depth_k.push_back(5.0);
+        st.mid.push_back(100.5);
+        st.microprice.push_back(100.5);
+        st.spread.push_back(1.0);
+    }
+    EXPECT_THROW(lobmod::ofi_at(st, 3, 4), std::invalid_argument);
+    const double v = lobmod::ofi_at(st, 4, 4); // sums e_1..e_4: finite, zero
+    EXPECT_TRUE(std::isfinite(v));
+    EXPECT_DOUBLE_EQ(v, 0.0);
+    EXPECT_THROW(lobmod::ofi_at(st, 9, 10), std::invalid_argument);
+    EXPECT_DOUBLE_EQ(lobmod::ofi_at(st, 9, 9), 0.0);
+}
+
 } // namespace

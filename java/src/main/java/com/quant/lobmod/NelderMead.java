@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.function.ToDoubleFunction;
 
 /**
- * Native Nelder-Mead simplex minimizer (P02-pinned configuration).
+ * Native Nelder-Mead simplex minimizer (pinned scipy-compatible configuration).
  *
  * <p>Deterministic, derivative-free minimization of {@code f: R^n -> double}.
  * The configuration is pinned so every language reproduces the same

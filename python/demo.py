@@ -66,7 +66,7 @@ def main() -> None:
     section("2. Univariate Hawkes fit (data/hawkes_uni.csv)")
     with open(os.path.join(DATA, "dgp_params.json")) as fh:
         dgp = json.load(fh)
-    t_uni = np.loadtxt(os.path.join(DATA, "hawkes_uni.csv"), skiprows=1)
+    t_uni = lm.read_times_csv(os.path.join(DATA, "hawkes_uni.csv"))
     T_uni = dgp["hawkes_uni"]["T"]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -98,8 +98,7 @@ def main() -> None:
 
     # -------------------------------------------------------- Hawkes bivariate
     section("4. Bivariate Hawkes: buy/sell market-order cross-excitation")
-    raw = np.loadtxt(os.path.join(DATA, "hawkes_biv.csv"), skiprows=1, delimiter=",")
-    t_biv, k_biv = raw[:, 0], raw[:, 1].astype(int)
+    t_biv, k_biv = lm.read_marked_times_csv(os.path.join(DATA, "hawkes_biv.csv"))
     T_biv = dgp["hawkes_biv"]["T"]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")

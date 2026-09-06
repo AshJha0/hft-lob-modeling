@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -43,7 +42,7 @@ public final class Demo {
         section("1. Limit order book replay (data/lob_events.csv)");
         List<Event> events = Replay.readEventsCsv(data.resolve("lob_events.csv"));
         FeatureConfig cfg = FeatureConfig.load(data.resolve("features_config.json"));
-        BookStates states = Replay.replay(events, cfg.depthK(), 1.0);
+        BookStates states = Replay.replay(events, cfg.depthK());
         LimitOrderBook book = new LimitOrderBook();
         for (Event e : events) {
             Replay.applyEvent(book, e);
@@ -51,7 +50,7 @@ public final class Demo {
         long nL = events.stream().filter(e -> e.etype() == 'L').count();
         long nC = events.stream().filter(e -> e.etype() == 'C').count();
         long nM = events.stream().filter(e -> e.etype() == 'M').count();
-        int volume = book.trades().stream().mapToInt(Fill::size).sum();
+        long volume = book.trades().stream().mapToLong(Fill::size).sum();
         double midMin = Double.POSITIVE_INFINITY;
         double midMax = Double.NEGATIVE_INFINITY;
         int nanMid = 0;
@@ -87,7 +86,7 @@ public final class Demo {
         // ------------------------------------------------- Hawkes univariate
         section("2. Univariate Hawkes fit (data/hawkes_uni.csv)");
         Map<String, Object> dgp = readJson(data.resolve("dgp_params.json"));
-        double[] tUni = readColumnCsv(data.resolve("hawkes_uni.csv"));
+        double[] tUni = Hawkes.readTimesCsv(data.resolve("hawkes_uni.csv"));
         @SuppressWarnings("unchecked")
         Map<String, Object> dgpUni = (Map<String, Object>) dgp.get("hawkes_uni");
         double uniT = (Double) dgpUni.get("T");
@@ -127,13 +126,12 @@ public final class Demo {
 
         // -------------------------------------------------- Hawkes bivariate
         section("4. Bivariate Hawkes: buy/sell market-order cross-excitation");
-        double[][] biv = readTwoColumnCsv(data.resolve("hawkes_biv.csv"));
-        double[] tBiv = biv[0];
-        int[] kBiv = new int[biv[1].length];
+        Hawkes.BivSample bivSample = Hawkes.readMarkedTimesCsv(data.resolve("hawkes_biv.csv"));
+        double[] tBiv = bivSample.times();
+        int[] kBiv = bivSample.types();
         int nBuy = 0;
-        for (int i = 0; i < kBiv.length; i++) {
-            kBiv[i] = (int) biv[1][i];
-            if (kBiv[i] == 0) {
+        for (int k : kBiv) {
+            if (k == 0) {
                 nBuy++;
             }
         }
@@ -228,45 +226,6 @@ public final class Demo {
     private static Map<String, Object> readJson(Path path) {
         try {
             return (Map<String, Object>) MiniJson.parse(Files.readString(path));
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    private static double[] readColumnCsv(Path path) {
-        try {
-            List<String> lines = Files.readAllLines(path);
-            List<Double> out = new ArrayList<>();
-            for (int i = 1; i < lines.size(); i++) {
-                String line = lines.get(i).strip();
-                if (!line.isEmpty()) {
-                    out.add(Double.parseDouble(line));
-                }
-            }
-            return out.stream().mapToDouble(Double::doubleValue).toArray();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    private static double[][] readTwoColumnCsv(Path path) {
-        try {
-            List<String> lines = Files.readAllLines(path);
-            List<double[]> rows = new ArrayList<>();
-            for (int i = 1; i < lines.size(); i++) {
-                String line = lines.get(i).strip();
-                if (line.isEmpty()) {
-                    continue;
-                }
-                String[] parts = line.split(",");
-                rows.add(new double[] {Double.parseDouble(parts[0]), Double.parseDouble(parts[1])});
-            }
-            double[][] out = new double[2][rows.size()];
-            for (int i = 0; i < rows.size(); i++) {
-                out[0][i] = rows.get(i)[0];
-                out[1][i] = rows.get(i)[1];
-            }
-            return out;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

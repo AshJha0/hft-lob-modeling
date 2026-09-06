@@ -52,21 +52,41 @@ lambda``, the rescaled times ``Lambda(t_i)`` form a unit-rate Poisson
 process, so the increments ``tau_i = Lambda(t_i) - Lambda(t_{i-1})`` are iid
 Exp(1).  Goodness of fit therefore reduces to a KS test of the residuals
 ``tau_i`` against Exp(1) (see :mod:`lobmod.gof`).
+
+Units
+-----
+Event times and the horizon ``T`` share one arbitrary time unit (seconds in
+the bundled data); ``mu`` is events per unit time, ``beta`` is per unit time,
+``alpha`` is dimensionless per event (the branching ratio is ``alpha/beta``).
+Nothing in this module converts units.
+
+Simulation bound
+----------------
+Ogata thinning terminates almost surely, but no finite bound exists in
+principle; every simulator therefore stops with ``ValueError`` after
+``MAX_CANDIDATES`` (= 50,000,000) candidate draws — far beyond any sane
+``mu * T`` for the bundled use.
 """
 
 from __future__ import annotations
 
 import math
+import re
 import warnings
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple
 
 import numpy as np
 
+from ._validate import as_int
 from .neldermead import NMResult, nelder_mead
 from .rng import Lcg64
 
 _PENALTY = 1e10
+#: pinned upper bound on thinning candidates per simulation (error if hit)
+MAX_CANDIDATES = 50_000_000
+_TIMES_HEADER = "t"
+_MARKED_HEADER = "t,type"
 
 
 # --------------------------------------------------------------- validation
@@ -113,7 +133,15 @@ def _check_types(types: np.ndarray, n: int) -> np.ndarray:
     k = np.asarray(types)
     if k.shape != (n,):
         raise ValueError("types must have the same length as times")
-    k = k.astype(int)
+    if k.dtype == np.bool_:
+        raise ValueError("types must be integers 0 or 1, got booleans")
+    if not np.issubdtype(k.dtype, np.integer):
+        kf = np.asarray(k, dtype=float)
+        if not np.all(np.isfinite(kf)) or np.any(kf != np.floor(kf)):
+            raise ValueError("types must be integers 0 or 1")
+        k = kf.astype(int)
+    else:
+        k = k.astype(int)
     if np.any((k != 0) & (k != 1)):
         raise ValueError("types must be 0 or 1")
     return k
@@ -298,18 +326,18 @@ def simulate_uni(mu: float, alpha: float, beta: float, T: float, seed: int) -> n
     t = 0.0
     s = 0.0
     out: List[float] = []
-    while True:
+    for _ in range(MAX_CANDIDATES):
         lam_bar = mu + alpha * s
         w = rng.exponential(lam_bar)
         t += w
         if t > T:
-            break
+            return np.asarray(out)
         s *= math.exp(-beta * w)
         lam_t = mu + alpha * s
         if rng.uniform() * lam_bar <= lam_t:
             out.append(t)
             s += 1.0
-    return np.asarray(out)
+    raise ValueError(f"simulate_uni exceeded MAX_CANDIDATES = {MAX_CANDIDATES} thinning draws")
 
 
 def simulate_biv(
@@ -340,14 +368,14 @@ def simulate_biv(
     s = [0.0, 0.0]
     times: List[float] = []
     types: List[int] = []
-    while True:
+    for _ in range(MAX_CANDIDATES):
         lam0 = m[0] + a[0, 0] * s[0] + a[0, 1] * s[1]
         lam1 = m[1] + a[1, 0] * s[0] + a[1, 1] * s[1]
         lam_bar = lam0 + lam1
         w = rng.exponential(lam_bar)
         t += w
         if t > T:
-            break
+            return np.asarray(times), np.asarray(types, dtype=int)
         decay = math.exp(-beta * w)
         s[0] *= decay
         s[1] *= decay
@@ -359,7 +387,7 @@ def simulate_biv(
             times.append(t)
             types.append(typ)
             s[typ] += 1.0
-    return np.asarray(times), np.asarray(types, dtype=int)
+    raise ValueError(f"simulate_biv exceeded MAX_CANDIDATES = {MAX_CANDIDATES} thinning draws")
 
 
 # ------------------------------------------------------------------------ MLE
@@ -425,15 +453,12 @@ def _warn_branching(value: float) -> None:
         )
 
 
-def fit_uni(times: Sequence[float], T: float) -> HawkesUniFit:
-    """Univariate MLE via Nelder-Mead on log-transformed parameters.
+def uni_fit_objective(times: Sequence[float], T: float) -> Callable[[Sequence[float]], float]:
+    """The pure negative log-likelihood objective minimized by :func:`fit_uni`.
 
-    Pinned setup: minimize ``-ll(exp(x))`` over ``x = (log mu, log alpha,
-    log beta)`` from ``x0 = (log(0.5 N / T), log 0.5, 0)`` with
-    ``xatol=1e-8, fatol=1e-10, maxiter=5000``.  The log transform enforces
-    positivity without constraints.  Emits a RuntimeWarning when the fitted
-    branching ratio is >= 0.9 (near-critical) or >= 1 (non-stationary) —
-    the fit itself still returns.
+    Maps ``x = (log mu, log alpha, log beta)`` to ``-uni_loglik`` and returns
+    the penalty ``1e10`` (never raises) on overflow, non-finite values, or
+    ``exp`` underflow of ``mu``/``beta`` to exactly 0.
     """
     t = _check_times(np.asarray(times, dtype=float), T)
 
@@ -447,8 +472,25 @@ def fit_uni(times: Sequence[float], T: float) -> HawkesUniFit:
         val = uni_loglik(t, T, mu, alpha, beta)
         return -val if math.isfinite(val) else _PENALTY
 
+    return objective
+
+
+def fit_uni(times: Sequence[float], T: float, maxiter: int = 5000) -> HawkesUniFit:
+    """Univariate MLE via Nelder-Mead on log-transformed parameters.
+
+    Pinned setup: minimize ``-ll(exp(x))`` over ``x = (log mu, log alpha,
+    log beta)`` from ``x0 = (log(0.5 N / T), log 0.5, 0)`` with
+    ``xatol=1e-8, fatol=1e-10`` and ``maxiter`` (pinned default 5000).  The
+    log transform enforces positivity without constraints.  Emits a
+    RuntimeWarning when the fitted branching ratio is >= 0.9 (near-critical)
+    or >= 1 (non-stationary) — the fit itself still returns.  ``converged``
+    is the Nelder-Mead tolerance flag: ``False`` means the iteration cap
+    stopped the search and the parameters are only the best vertex found.
+    """
+    t = _check_times(np.asarray(times, dtype=float), T)
+    objective = uni_fit_objective(t, T)
     x0 = [math.log(0.5 * t.size / T), math.log(0.5), 0.0]
-    res = nelder_mead(objective, x0)
+    res = nelder_mead(objective, x0, maxiter=maxiter)
     mu, alpha, beta = (math.exp(v) for v in res.x)
     branching = alpha / beta
     _warn_branching(branching)
@@ -477,23 +519,17 @@ def spectral_radius_2x2(matrix: Sequence[Sequence[float]]) -> float:
     return math.sqrt(det)
 
 
-def fit_biv(times: Sequence[float], types: Sequence[int], T: float) -> HawkesBivFit:
-    """Bivariate MLE (full 2x2 alpha, scalar beta) via pinned Nelder-Mead.
+def biv_fit_objective(
+    times: Sequence[float], types: Sequence[int], T: float
+) -> Callable[[Sequence[float]], float]:
+    """The pure negative log-likelihood objective minimized by :func:`fit_biv`.
 
-    Pinned setup: parameters ``x = (log mu0, log mu1, log a00, log a01,
-    log a10, log a11, log beta)``; start ``mu_m = 0.5 N_m / T``, all
-    ``a = 0.25``, ``beta = 1``; two Nelder-Mead stages (the second restarts
-    from the first stage's optimum) with ``xatol=1e-8, fatol=1e-10,
-    maxiter=5000`` each — a pinned deterministic polish that guards against
-    premature simplex collapse in 7 dimensions.  Warns when the branching
-    spectral radius is >= 0.9 (near-critical) or >= 1 (non-stationary).
+    ``x = (log mu0, log mu1, log a00, log a01, log a10, log a11, log beta)``;
+    returns the penalty ``1e10`` (never raises) on overflow, non-finite
+    values, or ``exp`` underflow of ``mu0``/``mu1``/``beta`` to exactly 0.
     """
     t = _check_times(np.asarray(times, dtype=float), T)
     k = _check_types(np.asarray(types), t.size)
-    n0 = int(np.sum(k == 0))
-    n1 = t.size - n0
-    if n0 == 0 or n1 == 0:
-        raise ValueError("both event types must be present to fit the bivariate model")
 
     def objective(x: Sequence[float]) -> float:
         try:
@@ -502,18 +538,44 @@ def fit_biv(times: Sequence[float], types: Sequence[int], T: float) -> HawkesBiv
             return _PENALTY
         if not all(map(math.isfinite, p)):
             return _PENALTY
+        # exp() can underflow to exactly 0, which the likelihood's parameter
+        # validation would reject: treat it as out of domain (pure objective)
+        if p[0] <= 0.0 or p[1] <= 0.0 or p[6] <= 0.0:
+            return _PENALTY
         mu = p[0:2]
         alpha = [[p[2], p[3]], [p[4], p[5]]]
         val = biv_loglik(t, k, T, mu, alpha, p[6])
         return -val if math.isfinite(val) else _PENALTY
 
+    return objective
+
+
+def fit_biv(times: Sequence[float], types: Sequence[int], T: float, maxiter: int = 5000) -> HawkesBivFit:
+    """Bivariate MLE (full 2x2 alpha, scalar beta) via pinned Nelder-Mead.
+
+    Pinned setup: parameters ``x = (log mu0, log mu1, log a00, log a01,
+    log a10, log a11, log beta)``; start ``mu_m = 0.5 N_m / T``, all
+    ``a = 0.25``, ``beta = 1``; two Nelder-Mead stages (the second restarts
+    from the first stage's optimum) with ``xatol=1e-8, fatol=1e-10`` and
+    ``maxiter`` (pinned default 5000) each — a pinned deterministic polish
+    that guards against premature simplex collapse in 7 dimensions.  Warns
+    when the branching spectral radius is >= 0.9 (near-critical) or >= 1
+    (non-stationary).  ``converged`` is the second stage's tolerance flag.
+    """
+    t = _check_times(np.asarray(times, dtype=float), T)
+    k = _check_types(np.asarray(types), t.size)
+    n0 = int(np.sum(k == 0))
+    n1 = t.size - n0
+    if n0 == 0 or n1 == 0:
+        raise ValueError("both event types must be present to fit the bivariate model")
+    objective = biv_fit_objective(t, k, T)
     x0 = [
         math.log(0.5 * n0 / T), math.log(0.5 * n1 / T),
         math.log(0.25), math.log(0.25), math.log(0.25), math.log(0.25),
         0.0,
     ]
-    res1 = nelder_mead(objective, x0)
-    res2 = nelder_mead(objective, res1.x)
+    res1 = nelder_mead(objective, x0, maxiter=maxiter)
+    res2 = nelder_mead(objective, res1.x, maxiter=maxiter)
     res: NMResult = res2
     p = [math.exp(v) for v in res.x]
     mu = np.asarray(p[0:2])
@@ -527,3 +589,80 @@ def fit_biv(times: Sequence[float], types: Sequence[int], T: float) -> HawkesBiv
         branching=branching, spectral_radius=rad,
         converged=res.converged, n_iter=res1.n_iter + res2.n_iter,
     )
+
+
+# -------------------------------------------------------------------- CSV i/o
+
+_FLOAT_RE = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
+def _parse_time(field: str, context: str) -> float:
+    if not _FLOAT_RE.fullmatch(field):
+        raise ValueError(f"malformed time field {field!r} in {context}")
+    value = float(field)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite time {field!r} in {context}")
+    return value
+
+
+def read_times_csv(path: str) -> np.ndarray:
+    """Read a one-column event-time CSV with header ``t`` (e.g. ``hawkes_uni.csv``).
+
+    Pinned CSV rules are those of :mod:`lobmod.replay` (CRLF tolerated,
+    trailing blank lines ignored, interior blank lines and malformed or
+    non-finite values are errors).  Ordering is *not* validated here — the
+    likelihood functions do that.
+    """
+    from .replay import read_csv_lines
+
+    out = []
+    for i, line in enumerate(read_csv_lines(path, _TIMES_HEADER)):
+        if "," in line:
+            raise ValueError(f"malformed time row {i + 1}: expected 1 field: {line!r}")
+        out.append(_parse_time(line, f"time row {i + 1}"))
+    return np.asarray(out, dtype=float)
+
+
+def read_marked_times_csv(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Read a two-column ``t,type`` CSV (e.g. ``hawkes_biv.csv``).
+
+    Returns ``(times, types)``; ``types`` are validated to be ``0`` or ``1``.
+    """
+    from .replay import parse_int64, read_csv_lines
+
+    times = []
+    types = []
+    for i, line in enumerate(read_csv_lines(path, _MARKED_HEADER)):
+        row = line.split(",")
+        context = f"marked-time row {i + 1}"
+        if len(row) != 2:
+            raise ValueError(f"malformed {context}: expected 2 fields: {line!r}")
+        times.append(_parse_time(row[0], context))
+        k = parse_int64(row[1], context)
+        if k not in (0, 1):
+            raise ValueError(f"types must be 0 or 1, got {k} in {context}")
+        types.append(k)
+    return np.asarray(times, dtype=float), np.asarray(types, dtype=int)
+
+
+def write_times_csv(path: str, times: Sequence[float]) -> None:
+    """Write event times with header ``t`` using ``%.17g`` (exact round trip)."""
+    t = np.asarray(times, dtype=float)
+    if t.ndim != 1 or not np.all(np.isfinite(t)):
+        raise ValueError("times must be a finite 1-D array")
+    with open(path, "w", newline="") as fh:
+        fh.write(_TIMES_HEADER + "\n")
+        for v in t:
+            fh.write(f"{v:.17g}\n")
+
+
+def write_marked_times_csv(path: str, times: Sequence[float], types: Sequence[int]) -> None:
+    """Write ``t,type`` rows (``%.17g`` times, integer types 0/1)."""
+    t = np.asarray(times, dtype=float)
+    if t.ndim != 1 or not np.all(np.isfinite(t)):
+        raise ValueError("times must be a finite 1-D array")
+    k = _check_types(np.asarray(types), t.size)
+    with open(path, "w", newline="") as fh:
+        fh.write(_MARKED_HEADER + "\n")
+        for v, kk in zip(t, k):
+            fh.write(f"{v:.17g},{int(kk)}\n")

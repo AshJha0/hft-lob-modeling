@@ -1,4 +1,4 @@
-//! Native Nelder-Mead simplex minimizer (P02-pinned configuration).
+//! Native Nelder-Mead simplex minimizer (pinned scipy-compatible configuration).
 //!
 //! Deterministic, derivative-free minimization of `f: R^n -> f64`.  The
 //! configuration is pinned so every language reproduces the same iterates:

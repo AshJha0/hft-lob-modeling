@@ -1,6 +1,7 @@
 """Order book mechanics: priority, fills, edge cases, replay invariants."""
 
 import math
+import os
 
 import numpy as np
 import pytest
@@ -8,6 +9,8 @@ import pytest
 import lobmod as lm
 from lobmod.book import LimitOrderBook
 from lobmod.replay import apply_event
+
+from conftest import DATA_DIR
 
 
 def make_book():
@@ -196,3 +199,202 @@ def test_apply_event_unknown_type():
 def test_empty_replay_raises():
     with pytest.raises(ValueError, match="empty"):
         lm.replay([])
+
+
+# ----------------------------------------------------------- review additions
+
+def test_price_rounding_to_zero_ticks_rejected():
+    """PT-1: a positive price below half a tick must not rest at tick 0."""
+    b = LimitOrderBook(1.0)
+    with pytest.raises(ValueError, match="0 ticks"):
+        b.limit("B", 1e-12, 5, 1)
+    b2 = LimitOrderBook(0.01)
+    with pytest.raises(ValueError, match="0 ticks"):
+        b2.limit("S", 4e-12, 1, 2)
+    for book in (b, b2):
+        assert book.best_bid() is None and book.best_ask() is None
+        assert book.n_orders("B") == 0 and book.n_orders("S") == 0
+        assert book.log == []
+    with pytest.raises(ValueError, match=">= 1 tick"):
+        b.limit_ticks("B", 0, 5, 1)
+
+
+def test_large_tick_counts():
+    """PT-2: fine-tick products need 64-bit tick counts, and overflow errors."""
+    b = LimitOrderBook(1e-8)
+    fills, rested = b.limit("S", 60000.0, 1, 1)
+    assert (fills, rested) == ([], 1)
+    assert b.best_ask() == 6_000_000_000_000
+    fills, rested = b.limit("B", 60000.0, 1, 2)
+    assert [(f.maker_id, f.price, f.size) for f in fills] == [(1, 6_000_000_000_000, 1)]
+    assert rested == 0 and b.best_ask() is None and b.best_bid() is None
+    with pytest.raises(ValueError, match="MAX_TICKS"):
+        b.limit("B", 1e300, 1, 3)
+    assert b.best_bid() is None  # never became a sweep or a resting order
+    with pytest.raises(ValueError, match="MAX_TICKS"):
+        b.limit_ticks("B", lm.MAX_TICKS + 1, 1, 3)
+    b.limit_ticks("B", lm.MAX_TICKS, 1, 3)
+    assert b.best_bid() == lm.MAX_TICKS
+
+
+def test_tick_rounding_rule_is_half_up_within_tolerance():
+    """Pinned conversion: round half up, residual within 1e-9 * max(1, ratio)."""
+    b = LimitOrderBook(0.5)
+    b.limit("B", 99.5, 1, 1)
+    assert b.best_bid() == 199
+    b.limit("B", 100.0000000001, 1, 2)  # 200.0000000002 ticks, residual 2e-10 <= 1e-9*200
+    assert b.best_bid() == 200
+    with pytest.raises(ValueError, match="not a multiple"):
+        b.limit("B", 100.004, 1, 3)
+    with pytest.raises(ValueError, match="not a multiple"):
+        b.limit("B", 0.75, 1, 3)  # exactly 1.5 ticks: off-grid, never rounded
+    with pytest.raises(ValueError, match="price"):
+        b.limit("B", True, 1, 3)
+
+
+def test_limit_ticks_matches_limit():
+    a, c = LimitOrderBook(0.25), LimitOrderBook(0.25)
+    a.limit("S", 25.5, 4, 1)
+    c.limit_ticks("S", 102, 4, 1)
+    assert a.best_ask() == c.best_ask() == 102
+    fa, ra = a.limit("B", 26.0, 6, 2)
+    fc, rc = c.limit_ticks("B", 104, 6, 2)
+    assert fa == fc and ra == rc == 2
+    with pytest.raises(ValueError, match="order_id"):
+        c.limit_ticks("B", 100, 1, 2.5)
+
+
+def test_replay_prices_are_tick_counts(events):
+    """PT-4: Event.price is in ticks; replay never rescales it."""
+    st = lm.replay(events[:12])
+    assert st.best_bid[11] == 999.0 and st.best_ask[11] == 1001.0
+    manual = LimitOrderBook(tick_size=0.5)
+    for e in events[:12]:
+        manual.limit("B" if e.side == "B" else "S", e.price * 0.5, e.size, e.order_id)
+    assert manual.best_bid() == 999  # a 0.5-tick book fed price*tick lands on the same ticks
+    with pytest.raises(TypeError):
+        lm.replay(events[:12], tick_size=0.5)  # the parameter no longer exists
+    with pytest.raises(ValueError, match="depth_k"):
+        lm.replay(events[:12], depth_k=0)
+
+
+def test_depth_monotone_in_k_over_replay(events):
+    """PT-11: depth(side, k) is non-decreasing in k; depth(side, 1) is the best size."""
+    book = LimitOrderBook()
+    for e in events[:500]:
+        apply_event(book, e)
+        for side, best_size in (("B", book.best_bid_size()), ("S", book.best_ask_size())):
+            assert book.depth(side, 1) == best_size
+            for k in range(1, 6):
+                assert book.depth(side, k) <= book.depth(side, k + 1)
+
+
+def test_market_on_empty_book_and_reuse_of_cancelled_id():
+    """PT-12."""
+    b = LimitOrderBook()
+    assert b.market("B", 5) == ([], 5)
+    assert b.market("S", 3) == ([], 3)
+    b.limit("B", 100, 2, 7)
+    assert b.cancel(7) == 2
+    fills, rested = b.limit("S", 101, 4, 7)  # same id, now free again
+    assert fills == [] and rested == 4 and b.has_order(7)
+
+
+def test_crossed_sell_limit_stops_at_its_price_and_price_improvement():
+    """PT-13."""
+    b = LimitOrderBook()
+    b.limit("B", 100, 4, 1)
+    b.limit("B", 99, 4, 2)
+    fills, rested = b.limit("S", 100, 10, 3)
+    assert [(f.maker_id, f.price, f.size) for f in fills] == [(1, 100, 4)]
+    assert rested == 6 and b.best_ask() == 100 and b.best_bid() == 99
+    assert b.best_bid_size() == 4  # the 99 bid was never touched
+    fills, rested = b.limit("S", 95, 2, 4)  # aggressive: executes at the resting 99
+    assert [(f.price, f.size) for f in fills] == [(99, 2)] and rested == 0
+
+
+def test_record_trades_flag_and_clear_history():
+    b = LimitOrderBook(record_trades=False)
+    b.limit("S", 101, 5, 1)
+    fills, _ = b.market("B", 2)
+    assert len(fills) == 1 and b.trades == [] and b.log == []
+    assert b.best_ask_size() == 3  # matching unaffected
+    c = LimitOrderBook()
+    c.limit("S", 101, 5, 1)
+    c.market("B", 2)
+    assert len(c.trades) == 1 and len(c.log) == 2
+    c.clear_history()
+    assert c.trades == [] and c.log == [] and c.best_ask_size() == 3
+
+
+def test_numpy_integer_inputs_accepted():
+    """PT-16: numpy integer scalars are integers too (bools never are)."""
+    b = LimitOrderBook()
+    b.limit("B", 100.0, np.int64(5), np.int64(1))
+    b.limit("B", np.float64(99.0), np.int32(2), np.int32(2))
+    assert b.depth("B", np.int64(3)) == 7
+    assert b.cancel(np.int64(2)) == 2
+    assert b.market("S", np.int64(1))[1] == 0
+    assert lm.ks_pvalue(0.1, np.int64(50)) == lm.ks_pvalue(0.1, 50)
+    tr, te = lm.chronological_split(np.int64(10), 0.7)
+    assert tr.size == 7 and te.size == 3
+    assert lm.Lcg64(np.int64(7)).next_u64() == lm.Lcg64(7).next_u64()
+    assert lm.generate_events(np.int64(12), np.int64(3))[0].price == 999
+    with pytest.raises(ValueError, match="size"):
+        b.limit("B", 100.0, True, 9)
+    with pytest.raises(ValueError, match="size"):
+        b.limit("B", 100.0, 2.0, 9)
+
+
+def test_seed_domain_is_pinned():
+    lm.Lcg64(0)
+    lm.Lcg64(lm.MAX_SEED)
+    with pytest.raises(ValueError, match="seed"):
+        lm.Lcg64(lm.MAX_SEED + 1)  # never silently masked
+    with pytest.raises(ValueError, match="seed"):
+        lm.Lcg64(-1)
+    with pytest.raises(ValueError, match="seed"):
+        lm.Lcg64(1.5)
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_bytes(text.encode())
+    return str(p)
+
+
+def test_events_csv_robustness(tmp_path):
+    """PT-15: the pinned CSV rules."""
+    body = "seq,type,side,price,size,order_id\n1,L,B,999,10,1\n2,L,S,1001,10,2\n"
+    ok = lm.read_events_csv(_write(tmp_path, "ok.csv", body))
+    assert ok == [lm.Event(1, "L", "B", 999, 10, 1), lm.Event(2, "L", "S", 1001, 10, 2)]
+    crlf = body.replace("\n", "\r\n")
+    assert lm.read_events_csv(_write(tmp_path, "crlf.csv", crlf)) == ok
+    assert lm.read_events_csv(_write(tmp_path, "trail.csv", body + "\n\n")) == ok
+    assert lm.read_events_csv(_write(tmp_path, "noeol.csv", body.rstrip("\n"))) == ok
+    bad = {
+        "comma.csv": body + "3,M,B,0,2,0,\n",              # trailing comma: 7 fields
+        "float.csv": body + "3,L,B,999.5,1,3\n",           # non-integer field
+        "space.csv": body + "3, L,B,999,1,3\n",            # whitespace inside a field
+        "plus.csv": body + "3,L,B,+999,1,3\n",             # sign other than '-'
+        "type.csv": body + "3,X,B,999,1,3\n",              # unknown event type
+        "side.csv": body + "3,L,Q,999,1,3\n",              # unknown side
+        "blank.csv": "seq,type,side,price,size,order_id\n1,L,B,999,10,1\n\n2,L,S,1001,10,2\n",
+        "header.csv": "seq,side,type,price,size,order_id\n1,B,L,999,10,1\n",
+        "empty.csv": "",
+        "big.csv": body + "3,L,B,9223372036854775808,1,3\n",  # 2^63: out of range
+    }
+    for name, text in bad.items():
+        with pytest.raises(ValueError):
+            lm.read_events_csv(_write(tmp_path, name, text))
+    # unknown type / side are rejected at parse time even when structurally valid
+    with pytest.raises(ValueError, match="event type"):
+        lm.read_events_csv(_write(tmp_path, "t2.csv", body + "3,Z,B,999,1,3\n"))
+
+
+def test_events_csv_round_trip(tmp_path, events):
+    path = str(tmp_path / "stream.csv")
+    lm.write_events_csv(path, events)
+    assert lm.read_events_csv(path) == events
+    with open(path, "rb") as fh, open(os.path.join(DATA_DIR, "lob_events.csv"), "rb") as ref:
+        assert fh.read() == ref.read()  # byte-identical to the bundled file

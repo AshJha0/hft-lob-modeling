@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hft-lob-modeling — Limit order book, Hawkes processes and a from-scratch neural net in four languages</title>
+<!-- GitHub Pages landing page. If the repository is renamed, update the
+     github.com/AshJha0/hft-lob-modeling links below to match. -->
+<style>
+:root{--teal:#16697a;--green:#16a085;--ink:#1a1a2e;--muted:#556}
+body{font-family:'Segoe UI',Arial,sans-serif;margin:0;color:var(--ink);background:#f7f8fa}
+header{background:var(--teal);color:#fff;padding:3rem 2rem}
+header h1{margin:0 0 .5rem;font-size:2.2rem}
+header p{margin:0;max-width:52rem;opacity:.92;line-height:1.5}
+.wrap{max-width:64rem;margin:0 auto;padding:0 2rem}
+nav{margin-top:1.2rem}
+nav a{display:inline-block;background:var(--green);color:#fff;text-decoration:none;
+  padding:.55rem 1.1rem;margin:.25rem .6rem .25rem 0;border-radius:4px;font-weight:600}
+nav a.secondary{background:rgba(255,255,255,.15)}
+h2{color:var(--teal);border-bottom:2px solid #e3e8ec;padding-bottom:.3rem;margin-top:2.5rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(17rem,1fr));gap:1rem;margin:1.2rem 0}
+.card{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);padding:1rem 1.2rem;border-radius:4px}
+.card h3{margin:.1rem 0 .5rem;font-size:1.02rem;color:var(--teal)}
+.card p{margin:0;font-size:.9rem;color:var(--muted);line-height:1.45}
+pre{background:#10222a;color:#d7e3ea;padding:1rem 1.2rem;border-radius:4px;overflow-x:auto;
+  font-size:.85rem;line-height:1.5}
+.numbers{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12);border-radius:4px;
+  padding:1rem 1.4rem;font-family:Consolas,monospace;font-size:.88rem;line-height:1.7}
+.numbers table{border-collapse:collapse}
+.numbers td{padding:.05rem 1.2rem .05rem 0;vertical-align:top}
+.numbers td:first-child{color:var(--teal);white-space:nowrap}
+.honest{background:#fff8ec;border-left:4px solid var(--green);padding:.8rem 1.2rem;
+  border-radius:4px;font-size:.92rem;line-height:1.55;margin:1.2rem 0}
+footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>hft-lob-modeling</h1>
+    <p>A four-language (Python / C++ / Rust / Java) cross-verified laboratory for high-frequency market microstructure: a price-time-priority limit order book with deterministic replay, a pinned zero-intelligence order-flow generator, univariate and bivariate Hawkes processes with exact O(N) likelihoods, Ogata thinning and time-rescaling goodness of fit, and an OFI / queue-imbalance feature pipeline feeding a neural network built from scratch with no frameworks and no RNG. Every numerical path is pinned by API_SPEC.md and held to 18 golden cases in all four languages — closed out by an honest accounting of whether the predicted signal survives transaction costs (it does not: gross +45.0 ticks, net −139.5).</p>
+    <nav>
+      <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LEARN.md">Learn (guide)</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/COOKBOOK.md">Cookbook</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/API_SPEC.md">API contract</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling#references">References</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling">GitHub</a>
+      <a class="secondary" href="https://ashjha0.github.io/quant-portfolio/">Quant portfolio</a>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <h2>Measured, not claimed</h2>
+  <div class="numbers"><table>
+    <tr><td>Cross-language parity</td><td>python 101 · cpp 90 · rust 94 · java 84 tests — 369 passing, plus four demos producing the same report; suites run in ≈ 4.5 s / 2.5 s / 6 s / 5 s on a 2-core container</td></tr>
+    <tr><td>Golden suite</td><td>18 named cases in data/golden/golden.json spanning every component: book snapshots after events 1000/3000/5000, microprice (1e-12), OFI (1e-10), Hawkes log-likelihoods (1e-8), fits, KS statistic and p-value (1e-6), NN losses at epoch 1 and 800 (1e-8), holdout accuracies (1e-10), signal PnL after costs (1e-8)</td></tr>
+    <tr><td>Determinism</td><td>one pinned 64-bit Knuth/MMIX LCG for the whole project — never a language's built-in RNG; pinned draw order, exact Nelder-Mead recipe, sin-based weight init, full-batch gradient descent with no shuffling; every bundled CSV regenerates byte-for-byte from its seed</td></tr>
+    <tr><td>Independent recomputation</td><td>O(N) likelihood recursions vs brute-force O(N²) sums to 1e-10 (uni and biv); backprop vs central finite differences to rel. 1e-6 — generate_data.py refuses to write goldens unless both hold</td></tr>
+    <tr><td>Book invariants</td><td>replaying all 5,000 events asserts best_bid &lt; best_ask whenever both exist, per-order size conservation (added = rested + cancelled + maker fills + taker fills), FIFO and price priority, depth monotonicity</td></tr>
+    <tr><td>Pinned bounds</td><td>prices round half up to 1 ≤ ticks ≤ 9e18 within a 1e-9 relative grid tolerance; sizes and ids are signed 64-bit in every port; seeds ∈ [0, 2^63−1]; simulators cap at 5·10⁷ candidate draws; fit objectives are total functions (penalty 1e10, never an exception)</td></tr>
+    <tr><td>Bundled data</td><td>5,000-event ZI stream (seed 20240613: 2,774 limits, 1,522 cancels, 704 markets, 1,595 fills) · 1,211 univariate Hawkes events (seed 101) · 611 bivariate events (seed 33)</td></tr>
+    <tr><td>Honest outcome</td><td>MLP (16,8) holdout accuracy 0.7042 vs logistic 0.6996 vs majority 0.6582 on 1,305 test samples; 177 trades on the holdout: gross +45.0 ticks, net −139.5 after half-spread costs</td></tr>
+  </table></div>
+
+  <div class="honest"><strong>What the latest review changed.</strong> The review found that the Java book stored ticks, sizes and ids as <code>int</code>: a 3·10⁹-tick limit price narrowed to a negative value, which the matcher read as "no price bound" and swept the entire opposite side. Every port now holds prices, sizes and ids as signed 64-bit integers end to end, the price bound is an explicit flag rather than a sentinel, and the tick conversion is pinned (round half up, 1e-9 relative grid tolerance, <code>1 ≤ ticks ≤ 9e18</code>, C++ <code>to_ticks</code> no longer undefined behaviour). The same pass made the Hawkes fit objectives pure under <code>exp</code> underflow, fixed the <code>ofi_at</code> window boundary in C++, added label validation to <code>signal_pnl</code>, a dual Kolmogorov series for small λ, strict CSV readers and writers in all four ports, and the review test set PT-1 to PT-16. One caveat stated plainly: the accuracy and PnL goldens are argmax-discrete — a single flipped holdout prediction moves accuracy by 1/1305 ≈ 7.7e-4 — and pass bit-for-bit on glibc/x86-64 in all four languages, but a libm whose <code>sin</code>/<code>exp</code> differ by 1 ulp could legitimately flip a near-tie after 800 epochs; the README says to widen those tolerances to 1/n_test rather than "fix" the port.</div>
+
+  <h2>What's inside</h2>
+  <div class="grid">
+    <div class="card"><h3>Limit order book</h3>
+      <p>Price-time-priority matching with partial fills, market orders walking the book, crossed limits that stop at their own price, unknown-cancel and duplicate-id rejection. Prices are integer ticks (<code>tick_size</code> converts once at the API boundary); mid and microprice are the only doubles, with an explicit NaN guard when a side is empty (61 such events in the bundled stream).</p></div>
+    <div class="card"><h3>Replay, ZI flow and CSV</h3>
+      <p>Deterministic event replay with golden book snapshots; the Smith–Farmer–Gillemot–Krishnamurthy zero-intelligence generator with a pinned <code>u1, u2[, u3]</code> draw order; and strict readers/writers for the three CSV schemas (exact header, CRLF tolerated, only trailing blank lines, 64-bit integer grammar) so a hand-edited file fails loudly in every language.</p></div>
+    <div class="card"><h3>Hawkes processes</h3>
+      <p>Univariate and bivariate mutually exciting processes with an exponential kernel: Ozaki's O(N) likelihood recursion shipped next to its brute-force twin, Ogata thinning simulation (two uniforms per candidate), and MLE by a native Nelder–Mead on log-parameters that pins scipy's initial-simplex and acceptance conventions. Branching ratio and 2×2 spectral radius diagnostics warn at ≥ 0.9 and ≥ 1 rather than throwing.</p></div>
+    <div class="card"><h3>Goodness of fit</h3>
+      <p>Time-rescaling residuals (Brown et al. 2002; Meyer 1971 for the bivariate case) tested against Exp(1) with an exact KS statistic, Stephens' small-sample correction and two Kolmogorov series switched at λ &lt; 0.1. On the bundled data the fitted parameters pass (KS 0.0172, p = 0.86) and deliberately wrong ones reject (p = 2e-14).</p></div>
+    <div class="card"><h3>Feature pipeline</h3>
+      <p>Cont–Kukanov–Stoikov order-flow imbalance (their eq. 4), queue imbalance and microprice features over event-counted windows, with 3-class direction labels at a horizon H; <code>ofi_at(i, w)</code> requires <code>i ≥ w</code> and labels outside {0, 1, 2} are rejected. Windows, lookback and horizon are counted in events, never clock time.</p></div>
+    <div class="card"><h3>Neural network from scratch</h3>
+      <p>A (16, 8) ReLU MLP with softmax head, logistic-regression and majority baselines, Bishop §5.3 backprop, He-scaled deterministic sin-based init, population-variance standardisation with a <code>std &lt; 1e-12 → 1</code> floor, max-shifted softmax with a 1e-300 log floor, and pinned tie-breaks (argmax → lowest index). Training loss 1.0806 → 0.6760 over 800 full-batch epochs, reproduced to 1e-8 in four languages.</p></div>
+    <div class="card"><h3>Signal PnL</h3>
+      <p>Trades the predicted direction on the chronological holdout mid-to-mid, charging half a spread on entry only — PnL in ticks per unit size. The bundled result is the point of the project: the classifier finds real structure and costs erase it.</p></div>
+    <div class="card"><h3>Testing approach</h3>
+      <p>Three layers per language: the 18 goldens, the invariant and statistical tests API_SPEC §10 requires (KS at true parameters fails to reject, near-critical DGP fits with a warning, tiny-n KS), and the post-review edge-case suite (tick-0 and 6·10¹² / 10³⁰⁰-tick prices, CSV robustness, <code>maxiter = 1</code> reporting <code>converged = false</code>, Poisson and single-event limits, degenerate one-class labels). Tolerances are graduated: 1e-12 where arithmetic is exact, 1e-8 for pinned float pipelines, 1e-4 / 1e-3 for optimizer outputs.</p></div>
+    <div class="card"><h3>Reference papers</h3>
+      <p>Smith, Farmer, Gillemot &amp; Krishnamurthy (2003) for the ZI generator; Stoikov (2018) microprice; Cont, Kukanov &amp; Stoikov (2014) OFI; Hawkes (1971), Ozaki (1979), Ogata (1978, 1981), Bacry, Mastromatteo &amp; Muzy (2015); Brown et al. (2002), Meyer (1971), Stephens (1970), Numerical Recipes §14.3.3; Nelder &amp; Mead (1965), Lagarias et al. (1998), SciPy 1.0; Bishop (2006), He et al. (2015); Knuth TAOCP Vol. 2 §3.3.4 for the LCG.</p></div>
+    <div class="card"><h3>Units and what is out of scope</h3>
+      <p>Hawkes times and <code>T</code> share one arbitrary unit (seconds in the bundled data) with <code>mu</code>, <code>beta</code> per unit time and <code>alpha</code> per event. Not covered: timestamps and clock-time windows, calendars and sessions, reduce/replace/iceberg/auction/halt messages, fees, latency, fill probability, queue-position tracking, standard errors or Hessians for the MLE, duplicate-timestamp tie-breaking, multi-venue books. A reference and research implementation, not a matching engine or trading system.</p></div>
+  </div>
+
+  <h2>Part of a wider portfolio</h2>
+  <div class="grid">
+    <div class="card"><h3><a href="https://ashjha0.github.io/quant-portfolio/" style="color:inherit">quant-portfolio</a></h3>
+      <p>The end-to-end quantitative finance portfolio this project sits alongside: 10 project
+         areas built twice each (equity + FX) in Python with C++ and Rust performance twins —
+         31 sub-projects with golden-vector cross-language validation, a 481-question learning
+         guide and a verified cookbook. <a href="https://github.com/AshJha0/quant-portfolio">GitHub&nbsp;→</a></p></div>
+    <div class="card"><h3><a href="https://ashjha0.github.io/intraday-alpha-platform/" style="color:inherit">intraday-alpha-platform</a></h3>
+      <p>A polyglot (Python/C++/Rust/Java) research-to-production intraday trading platform:
+         market data → order books → 205-feature factory → 24 alphas → validation → portfolio →
+         fail-closed risk → execution → TCA, with an adaptive drift/lifecycle layer and 1,160
+         golden-parity tests. <a href="https://github.com/AshJha0/intraday-alpha-platform">GitHub&nbsp;→</a></p></div>
+    <div class="card"><h3><a href="https://github.com/AshJha0/Quant-Finance-Library" style="color:inherit">quantfinlib</a></h3>
+      <p>A zero-dependency quantitative finance platform for the JVM — research, validation,
+         execution and connectivity, from walk-forward backtesting to a measured
+         sub-microsecond tick-to-order path, with 1,090+ tests and CI on every push.
+         <a href="https://github.com/AshJha0/Quant-Finance-Library">GitHub&nbsp;→</a></p></div>
+  </div>
+
+  <h2>Quick start</h2>
+<pre>git clone https://github.com/AshJha0/hft-lob-modeling.git
+cd hft-lob-modeling
+
+# Python (3.11; numpy required, scipy only for three cross-check tests)
+cd python
+pip install -r requirements.txt          # numpy, scipy, pytest
+PYTHONPATH=src python3 demo.py           # end-to-end demo
+PYTHONPATH=src python3 -m pytest -q      # 101 tests incl. the golden suite
+cd ..
+
+# C++ (C++17, CMake &gt;= 3.16, g++ 13, GoogleTest)
+cd cpp
+bash build.sh    # cmake configure + build (Release, -j2)
+./build/demo
+ctest --test-dir build --output-on-failure    # 90 GoogleTest cases
+cd ..
+
+# Rust (edition 2021, cargo 1.95)
+cd rust
+cargo run --release --bin demo
+cargo test --release             # 94 unit + integration + golden tests
+cd ..
+
+# Java (21; JUnit 4 + Hamcrest at /usr/share/java)
+cd java
+bash build.sh    # javac -Xlint:all -Werror into out/
+bash demo.sh
+bash test.sh     # 84 tests</pre>
+
+  <footer>hft-lob-modeling is MIT-licensed — a reference and research implementation, not a trading system; see the <a href="https://github.com/AshJha0/hft-lob-modeling#readme">README</a> and <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LICENSE">LICENSE</a> on GitHub.</footer>
+</div>
+</body>
+</html>

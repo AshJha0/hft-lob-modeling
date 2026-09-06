@@ -230,4 +230,65 @@ TEST(Nn, ValidationErrors) {
     EXPECT_THROW(net.loss(nonfinite, d.y), std::invalid_argument);
 }
 
+// ------------------------------------------------------------ review additions
+
+TEST(Nn, SignalPnlRejectsInvalidLabels) {
+    // PT-5
+    EXPECT_THROW(lobmod::signal_pnl({3}, {1.0}, {1.0}), std::invalid_argument);
+    EXPECT_THROW(lobmod::signal_pnl({-1}, {1.0}, {1.0}), std::invalid_argument);
+    const auto [gross, net, n] = lobmod::signal_pnl({2, 0, 1}, {1.0, -2.0, 5.0}, {1.0, 1.0, 1.0});
+    EXPECT_DOUBLE_EQ(gross, 3.0);
+    EXPECT_DOUBLE_EQ(net, 2.0);
+    EXPECT_EQ(n, 2);
+}
+
+double fd_worst(MLP& net, const Matrix& x, const std::vector<int>& y) {
+    const auto [loss0, grads_w, grads_b] = net.loss_and_grads(x, y);
+    (void)loss0;
+    const double h = 1e-6;
+    double worst = 0.0;
+    for (std::size_t l = 0; l < net.weights().size(); ++l) {
+        for (std::size_t idx = 0; idx < net.weights()[l].a.size(); ++idx) {
+            MLP plus = net, minus = net;
+            plus.weights()[l].a[idx] += h;
+            minus.weights()[l].a[idx] -= h;
+            const double fd = (plus.loss(x, y) - minus.loss(x, y)) / (2.0 * h);
+            const double an = grads_w[l].a[idx];
+            worst = std::max(worst, std::abs(fd - an) / std::max({1.0, std::abs(fd), std::abs(an)}));
+        }
+        for (std::size_t j = 0; j < net.biases()[l].size(); ++j) {
+            MLP plus = net, minus = net;
+            plus.biases()[l][j] += h;
+            minus.biases()[l][j] -= h;
+            const double fd = (plus.loss(x, y) - minus.loss(x, y)) / (2.0 * h);
+            const double an = grads_b[l][j];
+            worst = std::max(worst, std::abs(fd - an) / std::max({1.0, std::abs(fd), std::abs(an)}));
+        }
+    }
+    return worst;
+}
+
+TEST(Nn, GradientCheckLogisticHeadAndTwoClassNet) {
+    // PT-14: the l == 0 early exit of backprop (no hidden layer) and a 2-class head
+    Matrix x(12, 5);
+    std::vector<int> y(12);
+    for (std::size_t i = 0; i < 12; ++i) {
+        for (std::size_t j = 0; j < 5; ++j) {
+            x(i, j) = std::sin(0.7 * static_cast<double>(i * 5 + j + 1));
+        }
+        const double score = x(i, 0) + 0.5 * x(i, 1) - 0.8 * x(i, 2);
+        y[i] = score > 0.4 ? 2 : (score < -0.4 ? 0 : 1);
+    }
+    MLP logistic(5, {}, 3);
+    EXPECT_LT(fd_worst(logistic, x, y), 1e-6);
+    Matrix x2(12, 4);
+    std::vector<int> y2(12);
+    for (std::size_t i = 0; i < 12; ++i) {
+        for (std::size_t j = 0; j < 4; ++j) x2(i, j) = x(i, j);
+        y2[i] = y[i] > 0 ? 1 : 0;
+    }
+    MLP two(4, {3}, 2);
+    EXPECT_LT(fd_worst(two, x2, y2), 1e-6);
+}
+
 } // namespace

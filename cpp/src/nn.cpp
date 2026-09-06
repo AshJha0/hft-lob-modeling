@@ -360,6 +360,9 @@ std::tuple<double, double, int> signal_pnl(const std::vector<int>& y_pred,
             "y_pred, fwd_ret, spread must be equal-length arrays");
     }
     for (std::size_t i = 0; i < y_pred.size(); ++i) {
+        if (y_pred[i] < 0 || y_pred[i] > 2) {
+            throw std::invalid_argument("y_pred labels must be in {0, 1, 2}");
+        }
         if (!(std::isfinite(fwd_ret[i]) && std::isfinite(spread[i]))) {
             throw std::invalid_argument("fwd_ret and spread must be finite");
         }

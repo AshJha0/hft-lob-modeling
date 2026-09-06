@@ -36,12 +36,23 @@
 //! rescaled increments `tau_i = Lambda(t_i) - Lambda(t_{i-1})` are iid
 //! Exp(1), so goodness of fit reduces to a KS test against Exp(1)
 //! (see [`crate::gof`]).
+//!
+//! Units: times and `T` share one arbitrary time unit; `mu` and `beta` are
+//! per unit time, `alpha` per event.  Simulators stop with an error after
+//! [`MAX_CANDIDATES`] thinning draws (the loop terminates almost surely but
+//! has no finite worst case).
 
+use std::fs;
+use std::io::Write;
+
+use crate::csv::{parse_double_strict, parse_int64_strict, read_csv_lines};
 use crate::error::{LobError, Result};
-use crate::neldermead::{nelder_mead_default, NmResult};
+use crate::neldermead::{nelder_mead, NmResult, DEFAULT_FATOL, DEFAULT_MAXITER, DEFAULT_XATOL};
 use crate::rng::Lcg64;
 
 const PENALTY: f64 = 1e10;
+/// Pinned upper bound on thinning candidates per simulation (error if hit).
+pub const MAX_CANDIDATES: u64 = 50_000_000;
 
 // ---------------------------------------------------------------- validation
 
@@ -397,16 +408,16 @@ pub fn simulate_uni(mu: f64, alpha: f64, beta: f64, t_end: f64, seed: u64) -> Re
             "T must be positive and finite, got {t_end}"
         )));
     }
-    let mut rng = Lcg64::new(seed);
+    let mut rng = Lcg64::new(seed)?;
     let mut t = 0.0;
     let mut s = 0.0;
     let mut out = Vec::new();
-    loop {
+    for _ in 0..MAX_CANDIDATES {
         let lam_bar = mu + alpha * s; // intensity just after last step
         let w = rng.exponential(lam_bar)?; // 1st uniform
         t += w;
         if t > t_end {
-            break;
+            return Ok(out);
         }
         s *= (-beta * w).exp();
         let lam_t = mu + alpha * s;
@@ -416,7 +427,9 @@ pub fn simulate_uni(mu: f64, alpha: f64, beta: f64, t_end: f64, seed: u64) -> Re
             s += 1.0;
         }
     }
-    Ok(out)
+    Err(LobError::InvalidInput(format!(
+        "simulate_uni exceeded MAX_CANDIDATES = {MAX_CANDIDATES} thinning draws"
+    )))
 }
 
 /// Simulate a bivariate Hawkes process by Ogata thinning (pinned).
@@ -451,19 +464,19 @@ pub fn simulate_biv(
             "T must be positive and finite, got {t_end}"
         )));
     }
-    let mut rng = Lcg64::new(seed);
+    let mut rng = Lcg64::new(seed)?;
     let mut t = 0.0;
     let mut s = [0.0_f64, 0.0_f64];
     let mut times = Vec::new();
     let mut types = Vec::new();
-    loop {
+    for _ in 0..MAX_CANDIDATES {
         let lam0 = mu[0] + alpha[0][0] * s[0] + alpha[0][1] * s[1];
         let lam1 = mu[1] + alpha[1][0] * s[0] + alpha[1][1] * s[1];
         let lam_bar = lam0 + lam1;
         let w = rng.exponential(lam_bar)?;
         t += w;
         if t > t_end {
-            break;
+            return Ok((times, types));
         }
         let decay = (-beta * w).exp();
         s[0] *= decay;
@@ -478,7 +491,9 @@ pub fn simulate_biv(
             s[typ] += 1.0;
         }
     }
-    Ok((times, types))
+    Err(LobError::InvalidInput(format!(
+        "simulate_biv exceeded MAX_CANDIDATES = {MAX_CANDIDATES} thinning draws"
+    )))
 }
 
 // ------------------------------------------------------------------------ MLE
@@ -543,20 +558,16 @@ fn branching_warning(value: f64) -> Option<String> {
     }
 }
 
-/// Univariate MLE via Nelder-Mead on log-transformed parameters.
-///
-/// Pinned setup: minimize `-ll(exp(x))` over `x = (log mu, log alpha,
-/// log beta)` from `x0 = (log(0.5 N / T), log 0.5, 0)` with
-/// `xatol=1e-8, fatol=1e-10, maxiter=5000`.  The log transform enforces
-/// positivity without constraints.  A near-critical (>= 0.9) or
-/// non-stationary (>= 1) fitted branching ratio is reported in
-/// [`HawkesUniFit::warning`] — the fit still returns.
+/// The pure objective minimized by [`fit_uni`]: `x = (log mu, log alpha,
+/// log beta)` maps to `-uni_loglik`; returns the penalty `1e10` (never
+/// fails) on overflow, non-finite values, or `exp` underflow of `mu`/`beta`
+/// to exactly 0.
 ///
 /// # Errors
-/// [`LobError::InvalidInput`] on invalid event times.
-pub fn fit_uni(times: &[f64], t_end: f64) -> Result<HawkesUniFit> {
+/// [`LobError::InvalidInput`] on invalid event times (at construction).
+pub fn uni_fit_objective<'a>(times: &'a [f64], t_end: f64) -> Result<impl Fn(&[f64]) -> f64 + 'a> {
     check_times(times, t_end)?;
-    let objective = |x: &[f64]| -> f64 {
+    Ok(move |x: &[f64]| -> f64 {
         let mu = x[0].exp();
         let alpha = x[1].exp();
         let beta = x[2].exp();
@@ -569,13 +580,38 @@ pub fn fit_uni(times: &[f64], t_end: f64) -> Result<HawkesUniFit> {
         } else {
             PENALTY
         }
-    };
+    })
+}
+
+/// Univariate MLE via Nelder-Mead on log-transformed parameters.
+///
+/// Pinned setup: minimize `-ll(exp(x))` over `x = (log mu, log alpha,
+/// log beta)` from `x0 = (log(0.5 N / T), log 0.5, 0)` with
+/// `xatol=1e-8, fatol=1e-10, maxiter=5000`.  The log transform enforces
+/// positivity without constraints.  A near-critical (>= 0.9) or
+/// non-stationary (>= 1) fitted branching ratio is reported in
+/// [`HawkesUniFit::warning`] — the fit still returns.  `converged == false`
+/// means the iteration cap stopped the search and the parameters are only
+/// the best vertex found.
+///
+/// # Errors
+/// [`LobError::InvalidInput`] on invalid event times.
+pub fn fit_uni(times: &[f64], t_end: f64) -> Result<HawkesUniFit> {
+    fit_uni_with(times, t_end, DEFAULT_MAXITER)
+}
+
+/// [`fit_uni`] with an explicit Nelder-Mead iteration cap.
+///
+/// # Errors
+/// As [`fit_uni`]; also if `maxiter == 0`.
+pub fn fit_uni_with(times: &[f64], t_end: f64, maxiter: usize) -> Result<HawkesUniFit> {
+    let objective = uni_fit_objective(times, t_end)?;
     let x0 = [
         (0.5 * times.len() as f64 / t_end).ln(),
         0.5_f64.ln(),
         0.0,
     ];
-    let res = nelder_mead_default(objective, &x0)?;
+    let res = nelder_mead(objective, &x0, DEFAULT_XATOL, DEFAULT_FATOL, maxiter)?;
     let (mu, alpha, beta) = (res.x[0].exp(), res.x[1].exp(), res.x[2].exp());
     let branching = alpha / beta;
     Ok(HawkesUniFit {
@@ -615,6 +651,41 @@ pub fn spectral_radius_2x2(m: &[[f64; 2]; 2]) -> Result<f64> {
     }
 }
 
+/// The pure objective minimized by [`fit_biv`]: `x = (log mu0, log mu1,
+/// log a00, log a01, log a10, log a11, log beta)` maps to `-biv_loglik`;
+/// returns the penalty `1e10` (never fails) on overflow, non-finite values,
+/// or `exp` underflow of `mu0`/`mu1`/`beta` to exactly 0.
+///
+/// # Errors
+/// [`LobError::InvalidInput`] on invalid times/types (at construction).
+pub fn biv_fit_objective<'a>(
+    times: &'a [f64],
+    types: &'a [usize],
+    t_end: f64,
+) -> Result<impl Fn(&[f64]) -> f64 + 'a> {
+    check_times(times, t_end)?;
+    check_types(types, times.len())?;
+    Ok(move |x: &[f64]| -> f64 {
+        let p: Vec<f64> = x.iter().map(|v| v.exp()).collect();
+        if p.iter().any(|v| !v.is_finite()) {
+            return PENALTY;
+        }
+        // exp() can underflow to exactly 0, which the likelihood's parameter
+        // validation would reject: treat it as out of domain (pure objective)
+        if p[0] <= 0.0 || p[1] <= 0.0 || p[6] <= 0.0 {
+            return PENALTY;
+        }
+        let mu = [p[0], p[1]];
+        let alpha = [[p[2], p[3]], [p[4], p[5]]];
+        let val = biv_loglik_core(times, types, t_end, &mu, &alpha, p[6]);
+        if val.is_finite() {
+            -val
+        } else {
+            PENALTY
+        }
+    })
+}
+
 /// Bivariate MLE (full 2x2 alpha, scalar beta) via pinned Nelder-Mead.
 ///
 /// Pinned setup: parameters `x = (log mu0, log mu1, log a00, log a01,
@@ -630,6 +701,19 @@ pub fn spectral_radius_2x2(m: &[[f64; 2]; 2]) -> Result<f64> {
 /// [`LobError::InvalidInput`] on invalid input, or when either event type is
 /// absent.
 pub fn fit_biv(times: &[f64], types: &[usize], t_end: f64) -> Result<HawkesBivFit> {
+    fit_biv_with(times, types, t_end, DEFAULT_MAXITER)
+}
+
+/// [`fit_biv`] with an explicit per-stage Nelder-Mead iteration cap.
+///
+/// # Errors
+/// As [`fit_biv`]; also if `maxiter == 0`.
+pub fn fit_biv_with(
+    times: &[f64],
+    types: &[usize],
+    t_end: f64,
+    maxiter: usize,
+) -> Result<HawkesBivFit> {
     check_times(times, t_end)?;
     check_types(types, times.len())?;
     let n0 = types.iter().filter(|&&k| k == 0).count();
@@ -639,20 +723,7 @@ pub fn fit_biv(times: &[f64], types: &[usize], t_end: f64) -> Result<HawkesBivFi
             "both event types must be present to fit the bivariate model".to_string(),
         ));
     }
-    let objective = |x: &[f64]| -> f64 {
-        let p: Vec<f64> = x.iter().map(|v| v.exp()).collect();
-        if p.iter().any(|v| !v.is_finite()) {
-            return PENALTY;
-        }
-        let mu = [p[0], p[1]];
-        let alpha = [[p[2], p[3]], [p[4], p[5]]];
-        let val = biv_loglik_core(times, types, t_end, &mu, &alpha, p[6]);
-        if val.is_finite() {
-            -val
-        } else {
-            PENALTY
-        }
-    };
+    let objective = biv_fit_objective(times, types, t_end)?;
     let x0 = [
         (0.5 * n0 as f64 / t_end).ln(),
         (0.5 * n1 as f64 / t_end).ln(),
@@ -662,8 +733,8 @@ pub fn fit_biv(times: &[f64], types: &[usize], t_end: f64) -> Result<HawkesBivFi
         0.25_f64.ln(),
         0.0,
     ];
-    let res1 = nelder_mead_default(objective, &x0)?;
-    let res2: NmResult = nelder_mead_default(objective, &res1.x)?;
+    let res1 = nelder_mead(&objective, &x0, DEFAULT_XATOL, DEFAULT_FATOL, maxiter)?;
+    let res2: NmResult = nelder_mead(&objective, &res1.x, DEFAULT_XATOL, DEFAULT_FATOL, maxiter)?;
     let p: Vec<f64> = res2.x.iter().map(|v| v.exp()).collect();
     let mu = [p[0], p[1]];
     let alpha = [[p[2], p[3]], [p[4], p[5]]];
@@ -684,4 +755,95 @@ pub fn fit_biv(times: &[f64], types: &[usize], t_end: f64) -> Result<HawkesBivFi
         n_iter: res1.n_iter + res2.n_iter,
         warning: branching_warning(rad),
     })
+}
+
+// ------------------------------------------------------------------ CSV i/o
+
+/// Read a one-column event-time CSV with header `t` (pinned rules of
+/// [`crate::csv`]; values must be finite — ordering is validated by the
+/// likelihood functions).
+///
+/// # Errors
+/// [`LobError::Io`] / [`LobError::Parse`] on any violation.
+pub fn read_times_csv(path: &str) -> Result<Vec<f64>> {
+    let lines = read_csv_lines(path, "t")?;
+    let mut out = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let context = format!("time row {}", i + 1);
+        if line.contains(',') {
+            return Err(LobError::Parse(format!(
+                "malformed {context}: expected 1 field: {line:?}"
+            )));
+        }
+        out.push(parse_double_strict(line, &context)?);
+    }
+    Ok(out)
+}
+
+/// Read a two-column `t,type` CSV; types are validated to be 0 or 1.
+///
+/// # Errors
+/// [`LobError::Io`] / [`LobError::Parse`] on any violation.
+pub fn read_marked_times_csv(path: &str) -> Result<(Vec<f64>, Vec<usize>)> {
+    let lines = read_csv_lines(path, "t,type")?;
+    let mut times = Vec::with_capacity(lines.len());
+    let mut types = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let context = format!("marked-time row {}", i + 1);
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 2 {
+            return Err(LobError::Parse(format!(
+                "malformed {context}: expected 2 fields: {line:?}"
+            )));
+        }
+        let k = parse_int64_strict(fields[1], &context)?;
+        if k != 0 && k != 1 {
+            return Err(LobError::Parse(format!(
+                "types must be 0 or 1, got {k} in {context}"
+            )));
+        }
+        times.push(parse_double_strict(fields[0], &context)?);
+        types.push(k as usize);
+    }
+    Ok((times, types))
+}
+
+fn write_text(path: &str, text: &str) -> Result<()> {
+    let mut file = fs::File::create(path).map_err(|e| LobError::Io(format!("{path}: {e}")))?;
+    file.write_all(text.as_bytes())
+        .map_err(|e| LobError::Io(format!("{path}: {e}")))
+}
+
+/// Write event times with header `t`; every value round-trips exactly
+/// (Rust's shortest round-trip `Display` for `f64`).
+///
+/// # Errors
+/// [`LobError::InvalidInput`] on non-finite values; [`LobError::Io`] on
+/// file problems.
+pub fn write_times_csv(path: &str, times: &[f64]) -> Result<()> {
+    if times.iter().any(|v| !v.is_finite()) {
+        return Err(LobError::InvalidInput("times must be finite".to_string()));
+    }
+    let mut out = String::from("t\n");
+    for v in times {
+        out.push_str(&format!("{v:?}\n"));
+    }
+    write_text(path, &out)
+}
+
+/// Write `t,type` rows (exact round-trip times, integer types 0/1).
+///
+/// # Errors
+/// [`LobError::InvalidInput`] on non-finite times or invalid types;
+/// [`LobError::Io`] on file problems.
+pub fn write_marked_times_csv(path: &str, times: &[f64], types: &[usize]) -> Result<()> {
+    if times.iter().any(|v| !v.is_finite()) {
+        return Err(LobError::InvalidInput("times must be finite".to_string()));
+    }
+    check_types(types, times.len())?;
+    let mut out = String::from("t,type\n");
+    for (v, k) in times.iter().zip(types) {
+        out.push_str(&format!("{v:?},{k}\n"));
+    }
+    write_text(path, &out)
 }

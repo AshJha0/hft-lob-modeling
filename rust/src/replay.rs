@@ -8,10 +8,18 @@
 //! After *each* event the replay records the top-of-book state; the arrays in
 //! [`BookStates`] are the single input to the feature pipeline
 //! ([`crate::features`]).
+//!
+//! [`Event::price`] is a *tick count*, never a currency price: [`replay`]
+//! takes no tick size and drives a `tick_size = 1` book through
+//! [`LimitOrderBook::limit_ticks`].  CSV parsing follows the pinned rules in
+//! [`crate::csv`]; `type` must be one of `L`/`C`/`M` and `side` one of
+//! `B`/`S` at parse time.
 
 use std::fs;
+use std::io::Write;
 
 use crate::book::{LimitOrderBook, Side};
+use crate::csv::{parse_int64_strict, read_csv_lines};
 use crate::error::{LobError, Result};
 
 /// Order-flow event type.
@@ -109,48 +117,58 @@ impl BookStates {
 
 const HEADER: &str = "seq,type,side,price,size,order_id";
 
-fn parse_int(field: &str, row: &str) -> Result<i64> {
-    field
-        .parse::<i64>()
-        .map_err(|_| LobError::Parse(format!("malformed event row: {row:?}")))
-}
-
 /// Read an event stream CSV with the pinned header
-/// `seq,type,side,price,size,order_id`.
+/// `seq,type,side,price,size,order_id` (rules: [`crate::csv`]).
 ///
 /// # Errors
 /// [`LobError::Io`] on file problems, [`LobError::Parse`] /
 /// [`LobError::InvalidInput`] on a malformed header or row.
 pub fn read_events_csv(path: &str) -> Result<Vec<Event>> {
-    let text = fs::read_to_string(path).map_err(|e| LobError::Io(format!("{path}: {e}")))?;
-    let mut lines = text.lines();
-    match lines.next() {
-        Some(h) if h.trim_end() == HEADER => {}
-        other => {
-            return Err(LobError::Parse(format!(
-                "unexpected event CSV header: {other:?}"
-            )))
-        }
-    }
-    let mut events = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let fields: Vec<&str> = line.trim_end().split(',').collect();
+    let lines = read_csv_lines(path, HEADER)?;
+    let mut events = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let context = format!("event row {}", i + 1);
+        let fields: Vec<&str> = line.split(',').collect();
         if fields.len() != 6 {
-            return Err(LobError::Parse(format!("malformed event row: {line:?}")));
+            return Err(LobError::Parse(format!(
+                "malformed {context}: expected 6 fields, got {}: {line:?}",
+                fields.len()
+            )));
         }
         events.push(Event {
-            seq: parse_int(fields[0], line)?,
+            seq: parse_int64_strict(fields[0], &context)?,
             etype: EventType::from_code(fields[1])?,
             side: Side::from_code(fields[2])?,
-            price: parse_int(fields[3], line)?,
-            size: parse_int(fields[4], line)?,
-            order_id: parse_int(fields[5], line)?,
+            price: parse_int64_strict(fields[3], &context)?,
+            size: parse_int64_strict(fields[4], &context)?,
+            order_id: parse_int64_strict(fields[5], &context)?,
         });
     }
     Ok(events)
+}
+
+/// Write an event stream CSV with the pinned header (`\n` line endings).
+///
+/// # Errors
+/// [`LobError::Io`] if the file cannot be written.
+pub fn write_events_csv(path: &str, events: &[Event]) -> Result<()> {
+    let mut out = String::with_capacity(32 * (events.len() + 1));
+    out.push_str(HEADER);
+    out.push('\n');
+    for e in events {
+        out.push_str(&format!(
+            "{},{},{},{},{},{}\n",
+            e.seq,
+            e.etype.code(),
+            e.side.code(),
+            e.price,
+            e.size,
+            e.order_id
+        ));
+    }
+    let mut file = fs::File::create(path).map_err(|e| LobError::Io(format!("{path}: {e}")))?;
+    file.write_all(out.as_bytes())
+        .map_err(|e| LobError::Io(format!("{path}: {e}")))
 }
 
 /// Apply one event to the book.
@@ -160,7 +178,7 @@ pub fn read_events_csv(path: &str) -> Result<Vec<Event>> {
 pub fn apply_event(book: &mut LimitOrderBook, event: &Event) -> Result<()> {
     match event.etype {
         EventType::Limit => {
-            book.limit(event.side, event.price as f64, event.size, event.order_id)?;
+            book.limit_ticks(event.side, event.price, event.size, event.order_id)?;
         }
         EventType::Cancel => {
             book.cancel(event.order_id)?;
@@ -172,11 +190,18 @@ pub fn apply_event(book: &mut LimitOrderBook, event: &Event) -> Result<()> {
     Ok(())
 }
 
-/// Replay `events` through a fresh book, recording state after each event.
+/// Replay `events` through a fresh `tick_size = 1` book (event prices are
+/// tick counts), recording state after each event.
 ///
 /// # Errors
-/// [`LobError::InvalidInput`] if the stream is empty or an event is invalid.
-pub fn replay(events: &[Event], depth_k: usize, tick_size: f64) -> Result<BookStates> {
+/// [`LobError::InvalidInput`] if the stream is empty, `depth_k == 0`, or an
+/// event is invalid.
+pub fn replay(events: &[Event], depth_k: usize) -> Result<BookStates> {
+    if depth_k == 0 {
+        return Err(LobError::InvalidInput(
+            "depth_k must be a positive integer, got 0".to_string(),
+        ));
+    }
     if events.is_empty() {
         return Err(LobError::InvalidInput("event stream is empty".to_string()));
     }
@@ -192,7 +217,7 @@ pub fn replay(events: &[Event], depth_k: usize, tick_size: f64) -> Result<BookSt
         microprice: Vec::with_capacity(n),
         spread: Vec::with_capacity(n),
     };
-    let mut book = LimitOrderBook::new(tick_size)?;
+    let mut book = LimitOrderBook::with_options(1.0, false)?;
     for event in events {
         apply_event(&mut book, event)?;
         st.best_bid
