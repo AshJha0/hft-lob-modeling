@@ -5,14 +5,40 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-05
+
 ### Added
 
 - `reduce`, `execute`, `replace` and a v2 event schema with nanosecond timestamps in all four ports.
-- `lobmod.feeds.itch50` parser and book-integrity checker, fixture-tested only.
+- `lobmod.feeds.itch50` parser and book-integrity checker. Replayed on public ITCH 5.0 sample files for ten symbols with no parser or book anomalies and every execution at the touch; internal consistency, not comparison with a venue snapshot. Raw data is not redistributed.
+- `lobmod.feeds.iex` and `lobmod.feeds.pcap`: IEX HIST capture reader for DEEP and DEEP+ with sequence checks, fixture-tested and run once on one real DEEP+ file.
+- `research/real_replay.py` and `research/iex_replay.py` for replaying a file you supply.
+- Binary ITCH 5.0 decoder in C++ and Rust with `apply` into FastBook, and `itch_bench` in both.
+- FastBook `rest`, `reduce` and `replace`; a single id-map walk on a non-crossing add; a Rust allocation test.
+- `lobmod.sim.calibrate`, `research/calibrate.py` and `research/calibration_criteria.md`, with the criteria fixed before any fit.
+- `research/results_iex.md`: one IEX DEEP+ day for AAPL, MSFT and INTC, the only real-data numbers published. Data provided for free by IEX. By accessing or using IEX Historical Data, you agree to the IEX Historical Data Terms of Use. Terms: <https://www.iex.io/products/market-data-connectivity/hist-terms>.
+- `research/control_362.py` and `research/results_control.md`.
+- `bench/run_all.sh` and a Java reference-book benchmark (`java/bench.sh`).
+- `pyproject.toml`, `requirements.lock`, `CITATION.cff`, `CONTRIBUTING.md`, `SECURITY.md`, Dependabot, an advisory clang-tidy job, reported Python coverage and a package-install check in CI.
+- LEARN: one order end to end, market making, Kyle, Glosten-Milgrom, square-root impact, Lee-Ready, how to read a backtest honestly. COOKBOOK recipes 21 to 25. Six new diagrams.
 - `lobmod.sim` execution simulator with latency, queues, informed flow and P&L attribution.
 - Multi-exponential and power-law Hawkes kernels, seasonal baselines, cost-aware labels and a boosted-tree baseline in `lobmod.research`.
 - `FastBook` in C++ and Rust, benchmarks and `docs/LATENCY.md`.
-- Naive-model property tests in Rust and Java; libFuzzer harnesses in `fuzz/`, not yet in CI.
+- Naive-model property tests in Rust and Java; three libFuzzer harnesses in `fuzz/` (book, CSV, ITCH decoder), each run for 60 seconds in CI.
+
+### Changed
+
+- `BookIntegrityChecker` tracks the remaining size of held orders.
+- Documentation no longer attributes most of the old maker cap gain to mean reversion.
+- `docs/LATENCY.md` now reports idle-machine runs, in which FastBook is faster than the reference book on passive add as well as cancel. Java was not in this run.
+- `research/results.md`, `results_models.md` and `results_sim.md` regenerated with larger runs (60 streams, 30 streams, 40 seeds).
+
+### Research outcomes
+
+- **Failed:** calibration of `lobmod.sim` to real data, against criteria fixed in advance. It did not meet the criteria in sample, parameters did not carry across the day, and the held-out day was not run. The simulator remains uncalibrated and its P&L levels mean nothing.
+- **Inconclusive:** the +362 control. Mean reversion is only partly supported as the explanation.
+- **Not done:** a GC-free Java path; Java has no FastBook.
+- Hawkes on real trades, qualitative only: a seasonal two-timescale model is preferred over a single exponential, but the fast rate hits its bound and branching is not resolved. No value is quoted.
 
 ## [1.2.0] - 2026-11-05
 
@@ -51,7 +77,8 @@ All notable changes to this project are recorded here. The format follows
 - Python uses plain left-to-right sums, matching the other ports (the bundled
   univariate fit now reports 173 iterations in Python too).
 - `geometric` overflow is a range error in every port; Python raises `ValueError`
-  on price overflow, rejects `
+  on price overflow, rejects `
+
 ` line endings and reads CSV as UTF-8.
 
 ## [1.1.0] - 2026-09-06

@@ -248,10 +248,10 @@ def main():
     p("Reading: the zero-intelligence stream places limit orders relative to the opposite best, with no fair value, so "
       "its mid mean-reverts at long horizons, as the falling variance ratio shows. A maker is contrarian: it buys falls and "
       "sells rises. The position term is the cost of holding that inventory, and a wider cap shrinks the loss because a "
-      "bigger contrarian book is paid by the reversion instead of being forced out at the cap. That is a property of the "
+      "bigger contrarian book is paid by the reversion instead of being forced out at the cap. That looks like a property of the "
       "generator, not of the strategy. On the martingale fair value above, the same looser cap shows no such gain in the "
       "inventory term. This evidence is an attribution and a variance ratio, not a controlled removal of the reversion "
-      "from the old stream. The old replay also never reacts to the injected orders, which is not separately measured here.\n")
+      "from the old stream; the later controls in results_control.md are inconclusive, so reversion is only partly supported as the cause. The old replay also never reacts to the injected orders, which is not separately measured here.\n")
 
     # ---- assumptions
     fp = FlowParams()

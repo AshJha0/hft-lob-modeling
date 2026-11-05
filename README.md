@@ -1,14 +1,15 @@
 # High-Frequency LOB Modeling (`lobmod`)
 
-**This is a synthetic research and teaching lab.** The bundled data and every
-result below are simulated. Book-only timings exist in
+**This is a synthetic research and teaching lab.** The bundled data is simulated,
+and so are the published results, apart from one IEX replay
+([IEX replay](#iex-replay)), which holds the only real-data numbers published here.
+Book-only timings exist in
 [docs/LATENCY.md](docs/LATENCY.md), but nothing here measures wire-to-wire
-latency, the simulator is not calibrated to any market, and this is not a
-trading system. See [Limits](#limits) and [Known results](#known-results).
+latency, the simulator is not calibrated to any market (an attempt failed), and
+this is not a trading system. See [Real data](#real-data), [Limits](#limits) and
+[Known results](#known-results).
 
-Status: v1.2.0 is the latest release. Round 2 (L3 events, feed parser,
-simulator, richer models, FastBook) is merged and listed under `[Unreleased]`
-in [CHANGELOG.md](CHANGELOG.md).
+Status: v1.3.0. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 A four-language, cross-verified laboratory for high-frequency market microstructure:
 a price-time-priority **limit order book** simulator with deterministic replay, a pinned
@@ -19,7 +20,8 @@ fully deterministic **neural network built from scratch** (no frameworks, no RNG
 closed out by an honest accounting of whether the predicted signal survives
 transaction costs. (Spoiler from the bundled data: gross +45.0 ticks, net −139.5.)
 Around that pinned core sit a Python research package, an execution simulator,
-a Python ITCH 5.0 parser, and a preallocated FastBook in C++ and Rust.
+Python ITCH 5.0 and IEX parsers, and a preallocated FastBook with a binary ITCH
+decoder in C++ and Rust.
 
 Every numerical path is pinned by `API_SPEC.md` and verified against
 `data/golden/golden.json` (18 golden cases) in all four languages, plus
@@ -44,13 +46,15 @@ per-language suites of edge-case, invariant and cross-language parity tests
 | MLP + logistic + majority baselines (deterministic, no RNG) | `lobmod.nn` | `lobmod::Mlp` | `lobmod::Mlp` | `Mlp` |
 | Signal PnL with half-spread costs | `signal_pnl` | ditto | ditto | ditto |
 | Golden-value test suite (18 cases) + edge-case suite | pytest | GoogleTest | cargo test | JUnit 4 |
-| Preallocated FastBook, tested against the reference book | none | `lobmod::fast::FastBook` (`cpp/fast/`) | `lobmod::fast_book::FastBook` | none |
-| Book benchmark | none | `fast_book_bench` | `bench` binary | none |
-| ITCH 5.0 parser and book-integrity checker, tested on hand-built fixtures | `lobmod.feeds` | none | none | none |
+| Preallocated FastBook with `rest`, `reduce`, `replace`, tested against the reference book | none | `lobmod::fast::FastBook` (`cpp/fast/`) | `lobmod::fast_book::FastBook` | none |
+| Book and decoder benchmarks (`bench/run_all.sh`) | none | `fast_book_bench`, `itch_bench` | `bench`, `itch_bench` binaries | `java/bench.sh`, reference book only |
+| ITCH 5.0 parser and book-integrity checker, tested on fixtures and replayed on real sample files | `lobmod.feeds` | none | none | none |
+| IEX HIST reader (pcap, pcapng, DEEP, DEEP+), tested on hand-built fixtures and run once on one real DEEP+ file, see [IEX replay](#iex-replay) | `lobmod.feeds.iex`, `.pcap` | none | none | none |
+| Binary ITCH 5.0 decoder and FastBook mirror, allocation free | none | `cpp/fast/itch_decode.hpp` | `lobmod::itch_decode` | none |
 | Hawkes standard errors, LR tests, bootstrap goodness of fit, walk-forward evaluation, taker backtest, passive maker | `lobmod.research` | none | none | none |
 | Multi-exponential and power-law kernels, seasonal baselines, cost-aware labels, boosted trees | `lobmod.research.kernels`, `.seasonality`, `.labels`, `.baselines` | none | none | none |
-| Execution simulator: queues, latency, informed flow, fees, attribution | `lobmod.sim` | none | none | none |
-| libFuzzer harnesses (not in CI) | none | `fuzz/` | none | none |
+| Execution simulator: queues, latency, informed flow, fees, attribution; calibration checks | `lobmod.sim` | none | none | none |
+| libFuzzer harnesses for book, CSV and ITCH decoder, 60 seconds each in CI | none | `fuzz/` | none | none |
 
 Only the rows down to the golden suite, plus the book operations and v2 schema,
 are in the four-language contract. The rows below it have no golden values.
@@ -60,6 +64,8 @@ are in the four-language contract. The rows below it have no golden values.
 ```
 hft-lob-modeling/
   README.md, LEARN.md, COOKBOOK.md, API_SPEC.md, CHANGELOG.md, LICENSE (MIT)
+  CITATION.cff, CONTRIBUTING.md, SECURITY.md
+  pyproject.toml, requirements.lock   # installable package, hashed lock file
   docs/
     ARCHITECTURE.md          # design, data flow, Mermaid diagrams
     LATENCY.md               # book-only timings: reference book and FastBook
@@ -76,15 +82,20 @@ hft-lob-modeling/
     generate_data.py         # regenerates everything (fixed seeds)
     golden/golden.json       # 18 cross-language golden cases
   python/   src/lobmod/*.py (pinned core), tests/, demo.py, requirements.txt
-            src/lobmod/feeds/     # ITCH 5.0 parser, book-integrity checker
+            src/lobmod/feeds/     # ITCH 5.0 and IEX parsers, capture reader, book-integrity checker
             src/lobmod/research/  # inference, evaluation, kernels, labels, backtest
-            src/lobmod/sim/       # execution simulator and accounting
+            src/lobmod/sim/       # execution simulator, accounting, calibration checks
   cpp/      CMakeLists.txt, include/lobmod/*.hpp, src/, tests/, build.sh
-            fast/                 # FastBook header and benchmark
-  rust/     Cargo.toml, src/lib.rs, src/fast_book.rs, src/bin/{demo,bench}.rs, tests/
-  java/     src/main/java/com/quant/lobmod/*.java, src/test/..., build.sh, test.sh, demo.sh
+            fast/                 # FastBook, ITCH decoder, benchmarks
+  rust/     Cargo.toml, src/lib.rs, src/fast_book.rs, src/itch_decode.rs,
+            src/bin/{demo,bench,itch_bench}.rs, tests/
+  java/     src/main/java/com/quant/lobmod/*.java, src/test/..., src/bench/...,
+            build.sh, test.sh, demo.sh, bench.sh
   research/ run_all.py, run_models.py, run_sim.py and their generated results*.md
-  fuzz/     libFuzzer harnesses for the C++ book and CSV code, run.sh, README.md
+            real_replay.py, iex_replay.py   # replay a file you supply
+            calibrate.py, calibration_criteria.md, control_362.py, results_control.md
+  bench/    run_all.sh, every latency benchmark in one go
+  fuzz/     libFuzzer harnesses for the C++ book, CSV code and ITCH decoder
 ```
 
 ## Build, run, test
@@ -100,6 +111,9 @@ pip install -r requirements.txt          # numpy, scipy, pytest
 PYTHONPATH=src python3 demo.py           # end-to-end demo
 PYTHONPATH=src python3 -m pytest -q      # incl. the golden suite
 ```
+
+Or install the package from the repository root with `pip install -e ".[test]"`.
+`requirements.lock` pins exact versions with hashes.
 
 ### C++ (C++17, CMake >= 3.16, g++ 13, GoogleTest)
 
@@ -133,7 +147,10 @@ bash test.sh     # JUnitCore on all *Test classes
 ### Benchmarks and research scripts
 
 ```bash
-# Book-only timings, Linux or WSL; method and caveats are in docs/LATENCY.md
+# Everything at once, on an idle machine; method and caveats are in docs/LATENCY.md
+bash bench/run_all.sh
+
+# Or book-only timings by hand, Linux or WSL
 cmake -S cpp/fast -B build-fast -DCMAKE_BUILD_TYPE=Release
 cmake --build build-fast -j
 build-fast/fast_book_bench 2000000 20000 5
@@ -220,15 +237,44 @@ the spread on every trade erases the gross PnL. See research/results.md.
 demo complete.
 ```
 
-## Round 2 additions
+## New in v1.3.0
 
 These sit beside the pinned core. Only the book operations and the v2 event schema are in the four-language contract.
 
 - **L3 book operations and v2 events.** `reduce`, `execute`, `replace` and nanosecond timestamps in all four ports (`API_SPEC.md`). v1 files and goldens are unchanged.
-- **ITCH 5.0 parser** (`lobmod.feeds.itch50`, Python). Tested only on fixtures built by hand. It has **not** been run on a real file, and its message offsets have not yet been checked against the Nasdaq specification document.
-- **Execution simulator** (`lobmod.sim`, Python). Hawkes-driven reactive flow, informed traders, queue position, latency, fees and P&L attribution. It is uncalibrated: the parameters are assumed, so its P&L levels mean nothing. See [research/results_sim.md](research/results_sim.md).
+- **ITCH 5.0 parser** (`lobmod.feeds.itch50`, Python). Tested on fixtures built by hand and replayed on real sample files: see [Real data](#real-data).
+- **IEX reader** (`lobmod.feeds.iex`, `lobmod.feeds.pcap`, Python). Reads HIST captures, DEEP+ order by order and DEEP by price level, and checks sequence numbers. Tested on fixtures built from the public specifications and run once on one real DEEP+ file: see [IEX replay](#iex-replay). The DEEP path has not met a real file.
+- **Binary ITCH decoder** (C++ `cpp/fast/itch_decode.hpp`, Rust `itch_decode`). Reads a message without allocating, and `apply` mirrors it into a FastBook. Fuzzed in CI. Not a feed handler: there is no socket or capture path.
+- **Execution simulator** (`lobmod.sim`, Python). Hawkes-driven reactive flow, informed traders, queue position, latency, fees and P&L attribution. It is uncalibrated: the parameters are assumed, a calibration attempt failed, and its P&L levels mean nothing. See [research/results_sim.md](research/results_sim.md).
 - **Richer Hawkes models** (`lobmod.research`). Multi-timescale and power-law kernels and seasonal baselines. See [research/results_models.md](research/results_models.md).
-- **FastBook** (C++ `cpp/fast/`, Rust `fast_book`). A preallocated book with O(1) cancel, tested against the reference book. Book-only timings on a noisy laptop are in [docs/LATENCY.md](docs/LATENCY.md); this is not wire-to-wire latency.
+- **FastBook** (C++ `cpp/fast/`, Rust `fast_book`). A preallocated book with O(1) cancel, plus `rest`, `reduce` and `replace` so it can mirror a feed, tested against the reference book. On an idle laptop under WSL2 it beats the reference book on add, cancel and throughput, book only: [docs/LATENCY.md](docs/LATENCY.md). This is not wire-to-wire latency.
+- **Repository basics.** `pyproject.toml`, a hashed `requirements.lock`, `CITATION.cff`, `CONTRIBUTING.md`, `SECURITY.md`, Dependabot and an advisory clang-tidy job.
+
+## Real data
+
+The parser and book were replayed on public ITCH 5.0 sample files for ten symbols with no parser or book anomalies and every execution at the touch. That is internal consistency, not comparison with a venue snapshot. Raw data is not redistributed. Nasdaq-derived numbers do not appear in this repository.
+
+Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED: it did not meet the criteria in sample, parameters did not carry across the day, and the held-out day was not run. The simulator remains uncalibrated and its P&L levels mean nothing.
+
+Hawkes on real trades, qualitative only: a seasonal two-timescale model is preferred over a single exponential, but the fast rate hits its bound and branching is not resolved, so no value is quoted. Sub-millisecond burst structure cannot be attributed to a mechanism from this feed.
+
+The cap gain of +362 in the old maker study is inconclusive
+([research/results_control.md](research/results_control.md)): mean reversion is
+only partly supported as its explanation.
+
+## IEX replay
+
+Data provided for free by IEX. By accessing or using IEX Historical Data, you agree to the IEX Historical Data Terms of Use. Terms: <https://www.iex.io/products/market-data-connectivity/hist-terms>.
+
+`research/iex_replay.py` was run once on one real file, `20251212_IEXTP1_DPLS1.0.pcap.gz`: 335.5M packets and 477.6M messages, with books kept for AAPL, MSFT and INTC. No sequence gaps or parser anomalies were reported, every displayed execution was at the touch, and the book verified empty at the end of the day.
+
+| symbol | median spread (cents) | OFI R² | sign ACF, lag 1, aggregated |
+|---|---|---|---|
+| AAPL | 7 | 0.018 | 0.174 |
+| MSFT | 41 | 0.023 | 0.551 |
+| INTC | 1 | 0.250 | 0.296 |
+
+These describe IEX's own displayed book, which is thin and is not the NBBO. That is why the AAPL and MSFT spreads are wide and their OFI R² low. DEEP+ shows displayed orders only, and many IEX fills are not against displayed orders. One day and three symbols, on one venue. Details and an outside price check are in [research/results_iex.md](research/results_iex.md).
 
 ## Testing
 
@@ -241,8 +287,10 @@ and byte-identical regeneration of every bundled file from its seed). Python
 also has suites for the feed parser, research tools and simulator. Rust, Java
 and Python check the book against a naive model with property tests, and the
 C++ and Rust FastBook tests compare it with the reference book on randomized
-scripts. The fuzz harnesses are run by hand and are not in CI. Current counts
-are in CI, which runs all four suites on every push.
+scripts. CI runs the three fuzz harnesses for 60 seconds each from an empty
+corpus, so it catches shallow crashes rather than proving much. Python coverage
+is reported, not enforced. Current counts are in CI, which runs all four suites
+on every push.
 
 ## Cross-language golden testing
 
@@ -310,8 +358,8 @@ What a practitioner gets, precisely:
 - **Still absent.** Auctions, halts as book states (the parser reports trading
   actions but the book ignores them), iceberg and hidden orders in the book,
   multi-venue books, calendars and sessions, day-count conventions, tie-breaking
-  of duplicate timestamps in real data (reject and pre-process), and calibration
-  of the simulator or any model to real data.
+  of duplicate timestamps in real data (reject and pre-process), and any
+  calibrated simulator or model: the one attempt failed.
 - **Memory.** `trades` (and Python/C++ `log`) grow for the life of a book;
   pass `record_trades=False` / call `clear_history()` when replaying a full
   day.
@@ -326,27 +374,33 @@ What a practitioner gets, precisely:
 
 ## Limits
 
-- All data is synthetic. Nothing here is evidence about real markets; a
-  parameter recovered from the bundled data is one the generator put there.
-- Book-only timings exist ([docs/LATENCY.md](docs/LATENCY.md), a noisy laptop
-  under WSL2). There is no wire-to-wire figure, and no feed handler, venue or
-  order gateway is involved.
-- The simulator is uncalibrated: every parameter is assumed, so its P&L levels
-  mean nothing. Its agents also get a free fair-value feed. Without that feed
+- Bundled data is simulated, and the IEX results are the only real-data numbers
+  published. Apart from those one-venue, one-day figures, nothing here is evidence
+  about real markets; a parameter recovered from the bundled data is one the
+  generator put there. The real-file replays check our code, not a market.
+  Nasdaq-derived numbers are not published.
+- Book-only timings exist ([docs/LATENCY.md](docs/LATENCY.md), an idle laptop
+  under WSL2). There is no wire-to-wire figure, and no live feed handler, venue
+  or order gateway is involved. Java has no FastBook and no GC-free path, and was
+  not in the idle benchmark run.
+- The simulator is uncalibrated: every parameter is assumed, calibration failed
+  ([Real data](#real-data)), and its P&L levels mean nothing. Its agents also get a free fair-value feed. Without that feed
   the latency effect is not distinguishable from zero (2 ms minus 100 ms:
-  −4.7 [−34.2, 24.7] ticks, [research/results_sim.md](research/results_sim.md)).
+  −10.8 [−32.1, 10.5] ticks, 40 seeds, [research/results_sim.md](research/results_sim.md)).
   Positive maker P&L is not an edge.
 - The zero-intelligence generator is inspired by Smith et al. (2003) but differs
   from it (geometric placement off the opposite best, no event clock).
-- KS on fitted parameters is a weak test: 0/400 rejections at 5% under the true
-  model, and 3–5% against wrong kernels. Use the bootstrap in `lobmod.research`.
+- KS on fitted parameters is a weak test: in the v1.2.0 review, 0/400 rejections
+  at 5% under the true model and 3–5% against wrong kernels. Use the bootstrap in `lobmod.research`.
 - `microprice` is the size-weighted mid, not Stoikov's micro-price.
-- The single-split MLP lead is noise. Across 100 seeds logistic beats the MLP by
-  0.59 points (SE 0.16), and spread alone gives 0.693 of the 0.704.
+- The single-split MLP lead is noise. Across 60 streams MLP minus logistic is
+  −0.53 points [−0.95, −0.12] ([research/results.md](research/results.md)), an
+  earlier 100-seed run gave −0.59 (SE 0.16), and on the bundled split spread alone
+  gives 0.693 of the 0.704.
 
 ## Known results
 
-All synthetic. Multi-seed model comparison, bootstrap goodness of fit, the
+All simulated except [research/results_iex.md](research/results_iex.md). Multi-seed model comparison, bootstrap goodness of fit, the
 executable backtest and the maker simulator are in
 [research/results.md](research/results.md). Kernels, seasonality, cost-aware
 labels and boosted trees are in
@@ -377,6 +431,11 @@ Works the code implements or the documentation relies on:
 - He, K., Zhang, X., Ren, S., Sun, J. (2015). "Delving deep into rectifiers: surpassing human-level performance on ImageNet classification." *Proceedings of the IEEE ICCV*, 1026–1034. https://doi.org/10.1109/ICCV.2015.123 (arXiv:1502.01852) — source of the √(2/n_in) term; the pinned init is smaller than He (variance about 8x below).
 - Avellaneda, M., Stoikov, S. (2008). "High-frequency trading in a limit order book." *Quantitative Finance* 8(3), 217–224. https://doi.org/10.1080/14697680701381228 — the quoting formula of `sim.AvellanedaStoikov`, used with a rolling horizon.
 - Hardiman, S. J., Bercot, N., Bouchaud, J.-P. (2013). "Critical reflexivity in financial markets: a Hawkes process analysis." *European Physical Journal B* 86, 442. https://doi.org/10.1140/epjb/e2013-40107-3 — approximating a power-law kernel with exponentials (`research.kernels`).
+- Kyle, A. S. (1985). "Continuous auctions and insider trading." *Econometrica* 53(6), 1315. https://doi.org/10.2307/1913210 — LEARN section 10.8.
+- Glosten, L. R., Milgrom, P. R. (1985). "Bid, ask and transaction prices in a specialist market with heterogeneously informed traders." *Journal of Financial Economics* 14(1), 71–100. https://doi.org/10.1016/0304-405X(85)90044-3 — LEARN section 10.9.
+- Tóth, B., Lempérière, Y., Deremble, C., de Lataillade, J., et al. (2011). "Anomalous price impact and the critical nature of liquidity in financial markets." *Physical Review X* 1(2). https://doi.org/10.1103/PhysRevX.1.021006 — square-root impact, LEARN section 10.10.
+- Lee, C. M. C., Ready, M. J. (1991). "Inferring trade direction from intraday data." *Journal of Finance* 46(2), 733–746. https://doi.org/10.1111/j.1540-6261.1991.tb02683.x — LEARN section 10.11.
+- Ho, T., Stoll, H. R. (1981). "Optimal dealer pricing under transactions and return uncertainty." *Journal of Financial Economics* 9(1), 47–73. https://doi.org/10.1016/0304-405X(81)90020-9 — inventory and dealer quotes.
 - Knuth, D. E. (1997). *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, 3rd ed., §3.3.4 (MMIX LCG constants). Addison-Wesley. ISBN 978-0-201-89684-8 — the pinned 64-bit LCG (`Lcg64`).
 
 ## License

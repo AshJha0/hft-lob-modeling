@@ -26,5 +26,6 @@ This folder contains a self-contained landing page (`index.html`) for
 
 The "Checked in CI" block on the landing page quotes the golden-case count and
 the bundled-data figures stated in `README.md`. When those change, update both
-places in the same commit. The page is static HTML and has no build step. Test
+places in the same commit. The IEX section must keep its attribution text
+wherever IEX numbers are shown. The page is static HTML and has no build step. Test
 counts are deliberately left to CI on both pages.

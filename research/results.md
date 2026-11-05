@@ -18,9 +18,9 @@ Bundled `hawkes_uni.csv`, 1211 events, T = 1000. Truth: mu, alpha, beta = (0.5, 
 | test | statistic | p |
 |---|---|---|
 | LR vs Poisson, chi-bar mixture (indicative) | 534.8 | 1.29e-118 |
-| LR vs Poisson, bootstrap B=49 |  | 0.020 |
+| LR vs Poisson, bootstrap B=199 |  | 0.005 |
 | KS, table p (ignores estimation) | 0.0172 | 0.863 |
-| KS, parametric bootstrap B=49 | 0.0172 | 0.580 |
+| KS, parametric bootstrap B=199 | 0.0172 | 0.600 |
 | Ljung-Box on residuals, 10 lags | 6.78 | 0.746 |
 
 Bundled `hawkes_biv.csv`, 611 events, T = 600.
@@ -37,12 +37,12 @@ Bundled `hawkes_biv.csv`, 611 events, T = 600.
 
 Cross t-stats: a01 3.06, a10 3.39. LR no-cross 32.17: p = 3.29e-08 (boundary mixture), 1.03e-07 (chi2_2, conservative).
 
-KS test size under the true model: 30 paths, T = 200, B = 29.
+KS test size under the true model: 100 paths, T = 200, B = 29.
 
 | p-value | mean (0.5 if valid) | reject at 5% | reject at 10% |
 |---|---|---|---|
-| table | 0.743 | 0.000 | 0.000 |
-| bootstrap | 0.466 | 0.000 | 0.100 |
+| table | 0.776 | 0.000 | 0.010 |
+| bootstrap | 0.523 | 0.010 | 0.060 |
 
 Power against a U-shaped baseline fitted with constant mu: 10 paths, T = 300, B = 19. Rejection at 5%: table KS 0.00, bootstrap KS 0.30, Ljung-Box 0.10. With so few paths these are rough (se up to about 0.14).
 
@@ -66,31 +66,31 @@ Executable taker backtest of the MLP signal, one lot, no fee:
 | 1 | 33 | 10.0 | 52.0 | -42.0 | -1.27 | 0.03 |
 | 5 | 31 | -1.0 | 43.0 | -44.0 | -1.42 | 0.00 |
 
-## 3. Multi-seed comparison, 12 ZI streams of 5000 events
+## 3. Multi-seed comparison, 60 ZI streams of 5000 events
 
 Purged split, embargo 50. Mean over seeds with an iid bootstrap 95% CI. Skipped seeds: none.
 
 | metric | mlp | logistic | majority |
 |---|---|---|---|
-| accuracy | 0.707 [0.672, 0.743] | 0.717 [0.684, 0.750] | 0.678 [0.642, 0.714] |
-| log_loss | 0.744 [0.690, 0.804] | 0.734 [0.683, 0.786] | 0.855 [0.801, 0.908] |
-| mcc | 0.306 [0.265, 0.346] | 0.319 [0.282, 0.353] | 0.000 [0.000, 0.000] |
-| macro_f1 | 0.466 [0.440, 0.491] | 0.462 [0.437, 0.486] | 0.269 [0.260, 0.277] |
-| precision_up | 0.467 [0.404, 0.524] | 0.475 [0.408, 0.541] | undefined |
-| precision_down | 0.419 [0.346, 0.489] | 0.453 [0.362, 0.547] | undefined |
+| accuracy | 0.704 [0.690, 0.719] | 0.710 [0.696, 0.723] | 0.672 [0.658, 0.686] |
+| log_loss | 0.736 [0.713, 0.759] | 0.742 [0.721, 0.764] | 0.866 [0.846, 0.886] |
+| mcc | 0.312 [0.297, 0.327] | 0.313 [0.299, 0.327] | 0.000 [0.000, 0.000] |
+| macro_f1 | 0.465 [0.455, 0.476] | 0.460 [0.451, 0.469] | 0.268 [0.264, 0.271] |
+| precision_up | 0.437 [0.402, 0.473] | 0.437 [0.406, 0.467] | undefined |
+| precision_down | 0.447 [0.416, 0.477] | 0.462 [0.427, 0.496] | undefined |
 
-Paired accuracy difference: MLP minus logistic -0.0100 [-0.0210, 0.0004], MLP above logistic on 33% of seeds; MLP minus majority 0.0294 [0.0132, 0.0444], above on 83%.
+Paired accuracy difference: MLP minus logistic -0.0053 [-0.0095, -0.0012], MLP above logistic on 45% of seeds; MLP minus majority 0.0322 [0.0263, 0.0377], above on 92%.
 
 PnL per stream in ticks:
 
 | measure | mlp | logistic |
 |---|---|---|
-| signal_pnl gross | 31.8 [15.0, 49.1] | 30.0 [12.6, 47.1] |
-| signal_pnl net | -177.7 [-206.8, -152.5] | -163.2 [-189.5, -138.5] |
-| backtest net, delay 0 | -58.9 [-67.4, -50.9] | -54.2 [-61.2, -47.0] |
-| backtest net, delay 1 | -50.4 [-57.8, -43.8] | -47.7 [-53.6, -41.5] |
-| backtest net, delay 1, fee 0.1 | -57.5 [-65.7, -50.2] | -54.1 [-60.7, -47.1] |
-| round trips, delay 0 | 37.4 | 33.4 |
+| signal_pnl gross | 28.2 [19.8, 36.2] | 24.4 [17.4, 31.6] |
+| signal_pnl net | -197.6 [-214.2, -180.7] | -187.5 [-203.5, -172.1] |
+| backtest net, delay 0 | -60.0 [-64.1, -55.9] | -57.4 [-61.2, -53.5] |
+| backtest net, delay 1 | -53.1 [-56.8, -49.4] | -51.3 [-54.8, -47.7] |
+| backtest net, delay 1, fee 0.1 | -60.3 [-64.2, -56.2] | -57.9 [-61.6, -54.0] |
+| round trips, delay 0 | 37.8 | 34.6 |
 
 Share of seeds with positive MLP backtest net at delay 0: 0%.
 
@@ -105,21 +105,21 @@ Taker with perfect foresight, crossing both ways, 4 streams of 20000 events:
 | 200 | 0.412 | 1.02 |
 | 1000 | 0.747 | 4.40 |
 
-Passive maker, 6 streams of 20000 events, PnL in ticks per stream, marked at mid; `unwound` closes inventory at the touch:
+Passive maker, 20 streams of 20000 events, PnL in ticks per stream, marked at mid; `unwound` closes inventory at the touch:
 
 | delay | cap | fee | PnL [95% CI] | unwound | share > 0 | fills | quoted edge | realised @1 | realised @50 | realised @200 | skipped |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | 5 | 0.0 | 179.9 [84.9, 261.2] | 178.8 | 0.83 | 1335 | 0.578 | 0.174 | 0.041 | 0.014 | 56 |
-| 5 | 5 | 0.0 | 217.5 [140.3, 292.4] | 216.3 | 1.00 | 1104 | 0.575 | 0.204 | 0.075 | 0.060 | 53 |
-| 20 | 5 | 0.0 | 182.2 [134.7, 232.3] | 180.8 | 1.00 | 784 | 0.573 | 0.214 | 0.076 | 0.052 | 46 |
-| 0 | 5 | 0.1 | 46.4 [-47.7, 126.5] | 45.1 | 0.67 | 1335 | 0.578 | 0.174 | 0.041 | 0.014 | 56 |
-| 0 | 5 | 0.3 | -220.6 [-313.2, -142.6] | -222.3 | 0.00 | 1335 | 0.578 | 0.174 | 0.041 | 0.014 | 56 |
-| 0 | 20 | 0.0 | 396.3 [213.1, 578.1] | 390.3 | 1.00 | 1409 | 0.577 | 0.176 | 0.048 | 0.047 | 60 |
+| 0 | 5 | 0.0 | 129.3 [75.4, 182.2] | 127.8 | 0.80 | 1339 | 0.577 | 0.175 | 0.058 | 0.047 | 59 |
+| 5 | 5 | 0.0 | 143.4 [97.8, 191.7] | 141.7 | 0.90 | 1098 | 0.573 | 0.207 | 0.092 | 0.080 | 56 |
+| 20 | 5 | 0.0 | 145.5 [106.5, 182.1] | 144.1 | 0.95 | 782 | 0.575 | 0.227 | 0.102 | 0.083 | 47 |
+| 0 | 5 | 0.1 | -4.5 [-57.4, 47.4] | -6.3 | 0.55 | 1339 | 0.577 | 0.175 | 0.058 | 0.047 | 59 |
+| 0 | 5 | 0.3 | -272.2 [-324.1, -220.9] | -274.6 | 0.00 | 1339 | 0.577 | 0.175 | 0.058 | 0.047 | 59 |
+| 0 | 20 | 0.0 | 362.1 [274.3, 453.4] | 355.1 | 1.00 | 1407 | 0.578 | 0.176 | 0.069 | 0.064 | 64 |
 
 The maker PnL flatters: the flow does not react to our quotes, there are no competitors, and no informed traders exist in ZI flow.
 
 ## Seeds
 
 - Bootstrap seed 20261105; Hawkes size paths 5000+s, replicates 100000+1000s+b; power paths 7000+s, replicates 200000+1000s+b.
-- ZI streams: 7919 to 95028 in steps of 7919.
-- Maker streams: 7919 to 47514 in steps of 7919.
+- ZI streams: 7919 to 475140 in steps of 7919.
+- Maker streams: 7919 to 158380 in steps of 7919.

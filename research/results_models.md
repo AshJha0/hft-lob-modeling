@@ -100,70 +100,70 @@ BIC kept the flat baseline on 0% of paths.
 
 ## 3. Cost-aware labels
 
-10 ZI streams of 6000 events. `up`, `down`: share of events where crossing both ways pays. `best`: mean of the better round trip, a ceiling needing perfect foresight; negative means even that loses on the average event.
+30 ZI streams of 6000 events. `up`, `down`: share of events where crossing both ways pays. `best`: mean of the better round trip, a ceiling needing perfect foresight; negative means even that loses on the average event.
 
 ### no fee, no delay
 
 | H | up | down | best | mean when paid |
 |---|---|---|---|---|
-| 5 | 0.004 | 0.004 | -0.993 | 2.262 |
-| 10 | 0.011 | 0.011 | -0.861 | 2.300 |
-| 25 | 0.033 | 0.033 | -0.592 | 2.391 |
-| 50 | 0.065 | 0.066 | -0.240 | 2.680 |
-| 100 | 0.124 | 0.129 | 0.335 | 2.951 |
-| 200 | 0.203 | 0.206 | 1.183 | 3.534 |
-| 400 | 0.286 | 0.281 | 2.362 | 4.453 |
+| 5 | 0.004 | 0.003 | -0.995 | 2.118 |
+| 10 | 0.011 | 0.011 | -0.868 | 2.197 |
+| 25 | 0.033 | 0.033 | -0.594 | 2.411 |
+| 50 | 0.066 | 0.068 | -0.243 | 2.644 |
+| 100 | 0.124 | 0.130 | 0.328 | 2.938 |
+| 200 | 0.203 | 0.212 | 1.211 | 3.575 |
+| 400 | 0.289 | 0.293 | 2.528 | 4.596 |
 
 ### fee 0.1 per side, delay 1
 
 | H | up | down | best | mean when paid |
 |---|---|---|---|---|
-| 5 | 0.004 | 0.004 | -1.193 | 2.062 |
-| 10 | 0.011 | 0.011 | -1.061 | 2.100 |
-| 25 | 0.033 | 0.033 | -0.792 | 2.191 |
-| 50 | 0.065 | 0.066 | -0.440 | 2.480 |
-| 100 | 0.124 | 0.129 | 0.135 | 2.751 |
-| 200 | 0.203 | 0.206 | 0.983 | 3.334 |
-| 400 | 0.286 | 0.281 | 2.162 | 4.253 |
+| 5 | 0.004 | 0.003 | -1.195 | 1.918 |
+| 10 | 0.011 | 0.011 | -1.068 | 1.997 |
+| 25 | 0.033 | 0.033 | -0.794 | 2.211 |
+| 50 | 0.066 | 0.068 | -0.443 | 2.444 |
+| 100 | 0.124 | 0.130 | 0.128 | 2.738 |
+| 200 | 0.203 | 0.212 | 1.011 | 3.375 |
+| 400 | 0.289 | 0.293 | 2.328 | 4.396 |
 
-Models trained on the cost-aware label (fee 0.1, delay 1), 5 seeds, 3 purged folds, embargo 50. `net` is the event-driven backtest in ticks on pooled test rows, one position at a time. Mean over seeds, iid bootstrap 95% CI. `majority` predicts flat when flat is the training mode, so 0 trades is the bar to beat.
+Models trained on the cost-aware label (fee 0.1, delay 1), 15 seeds, 3 purged folds, embargo 50. `net` is the event-driven backtest in ticks on pooled test rows, one position at a time. Mean over seeds, iid bootstrap 95% CI. `majority` predicts flat when flat is the training mode, so 0 trades is the bar to beat.
 
 | H | payable share | model | MCC | trade share | net | trades |
 |---|---|---|---|---|---|---|
-| 10 | 0.018 | gbt | -0.002 [-0.004, -0.000] | 0.001 | -0.920 [-1.600, -0.240] | 1 |
-| 10 | 0.018 | mlp | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
-| 10 | 0.018 | logistic | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
-| 10 | 0.018 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
-| 50 | 0.113 | gbt | 0.021 [-0.003, 0.045] | 0.016 | -5.880 [-10.400, -2.040] | 4 |
-| 50 | 0.113 | mlp | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
-| 50 | 0.113 | logistic | 0.002 [0.000, 0.007] | 0.001 | -0.080 [-0.240, 0.000] | 0 |
-| 50 | 0.113 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
-| 200 | 0.415 | gbt | -0.030 [-0.089, 0.032] | 0.185 | -20.960 [-28.760, -15.480] | 7 |
-| 200 | 0.415 | mlp | 0.066 [-0.013, 0.124] | 0.086 | -5.600 [-14.800, 1.760] | 4 |
-| 200 | 0.415 | logistic | 0.046 [-0.025, 0.101] | 0.071 | -6.640 [-14.960, 0.440] | 4 |
-| 200 | 0.415 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
+| 10 | 0.020 | gbt | -0.002 [-0.003, -0.001] | 0.001 | -0.840 [-1.520, -0.306] | 1 |
+| 10 | 0.020 | mlp | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
+| 10 | 0.020 | logistic | 0.006 [-0.001, 0.018] | 0.001 | -0.387 [-1.080, 0.000] | 0 |
+| 10 | 0.020 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
+| 50 | 0.126 | gbt | 0.007 [-0.015, 0.030] | 0.014 | -6.467 [-8.814, -4.146] | 4 |
+| 50 | 0.126 | mlp | 0.012 [-0.002, 0.036] | 0.002 | -1.293 [-2.974, -0.053] | 0 |
+| 50 | 0.126 | logistic | 0.007 [-0.006, 0.025] | 0.004 | -1.093 [-2.307, -0.133] | 1 |
+| 50 | 0.126 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
+| 200 | 0.425 | gbt | -0.024 [-0.069, 0.018] | 0.191 | -16.587 [-22.120, -11.586] | 7 |
+| 200 | 0.425 | mlp | 0.029 [-0.009, 0.066] | 0.108 | -6.613 [-12.640, -0.706] | 5 |
+| 200 | 0.425 | logistic | 0.021 [-0.011, 0.053] | 0.075 | -5.373 [-10.161, -1.333] | 4 |
+| 200 | 0.425 | majority | 0.000 [0.000, 0.000] | 0.000 | 0.000 [0.000, 0.000] | 0 |
 
 ## 4. Boosted trees against logistic and MLP
 
-Pinned labels, H = 10, 10 ZI streams of 6000 events, 3 purged walk-forward folds, embargo 50. Boosting used fixed defaults with no tuning. Mean over seeds with an iid bootstrap 95% CI.
+Pinned labels, H = 10, 30 ZI streams of 6000 events, 3 purged walk-forward folds, embargo 50. Boosting used fixed defaults with no tuning. Mean over seeds with an iid bootstrap 95% CI.
 
 `net`: backtest with hold 10, delay 1, fee 0.1.
 
 | Model | accuracy | log-loss | MCC | macro-F1 | net | trades |
 |---|---|---|---|---|---|---|
-| gbt | 0.685 [0.650, 0.714] | 0.751 [0.711, 0.803] | 0.280 [0.252, 0.311] | 0.460 [0.440, 0.482] | -76.000 [-86.522, -65.379] | 50 |
-| mlp | 0.696 [0.660, 0.725] | 0.745 [0.707, 0.794] | 0.285 [0.260, 0.314] | 0.437 [0.419, 0.456] | -73.440 [-83.801, -64.100] | 42 |
-| logistic | 0.700 [0.663, 0.732] | 0.750 [0.711, 0.799] | 0.294 [0.259, 0.329] | 0.446 [0.429, 0.465] | -70.340 [-80.282, -60.980] | 40 |
-| majority | 0.668 [0.628, 0.699] | 0.869 [0.829, 0.921] | 0.000 [0.000, 0.000] | 0.267 [0.256, 0.274] | 0.000 [0.000, 0.000] | 0 |
+| gbt | 0.689 [0.675, 0.703] | 0.750 [0.726, 0.774] | 0.293 [0.277, 0.310] | 0.465 [0.454, 0.478] | -77.640 [-83.007, -72.159] | 50 |
+| mlp | 0.703 [0.689, 0.717] | 0.736 [0.714, 0.758] | 0.311 [0.296, 0.328] | 0.459 [0.447, 0.471] | -72.467 [-77.661, -67.266] | 42 |
+| logistic | 0.706 [0.691, 0.720] | 0.741 [0.720, 0.763] | 0.314 [0.296, 0.333] | 0.459 [0.448, 0.473] | -69.273 [-73.734, -64.680] | 40 |
+| majority | 0.666 [0.651, 0.681] | 0.873 [0.853, 0.894] | 0.000 [0.000, 0.000] | 0.266 [0.262, 0.270] | 0.000 [0.000, 0.000] | 0 |
 
-Paired log-loss difference, boosted trees minus the other model (negative favours boosting). Seed row: mean over seeds. Streams: how many of 10 per-stream block-bootstrap intervals (block 50) lie wholly below or above zero.
+Paired log-loss difference, boosted trees minus the other model (negative favours boosting). Seed row: mean over seeds. Streams: how many of 30 per-stream block-bootstrap intervals (block 50) lie wholly below or above zero.
 
 | Against | mean difference (95% CI) | below 0 | above 0 |
 |---|---|---|---|
-| logistic | 0.002 [-0.008, 0.012] | 0 | 0 |
-| mlp | 0.006 [-0.003, 0.015] | 0 | 0 |
+| logistic | 0.009 [0.001, 0.018] | 0 | 4 |
+| mlp | 0.014 [0.007, 0.022] | 0 | 6 |
 
 ## Seeds
 
 - Kernel paths `default_rng([11, case, T, s])`; seasonal paths `default_rng([12, case, s])`.
-- ZI streams 7919 to 79190 in steps of 7919.
+- ZI streams 7919 to 237570 in steps of 7919.

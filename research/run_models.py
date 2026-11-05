@@ -155,7 +155,7 @@ def main():
     p.add_argument("--quick", action="store_true")
     p.add_argument("--out", default=str(ROOT / "research" / "results_models.md"))
     a = p.parse_args()
-    reps, long_reps, seeds, cost_seeds, n_events, folds = (60, 20, 10, 5, 6000, 3)
+    reps, long_reps, seeds, cost_seeds, n_events, folds = (60, 20, 30, 15, 6000, 3)
     if a.quick:
         reps, long_reps, seeds, cost_seeds, n_events, folds = (4, 2, 2, 2, 4000, 2)
     warnings.simplefilter("ignore", RuntimeWarning)

@@ -1,0 +1,10 @@
+flowchart TB
+    Q["Events cluster in time. Why?"] --> B["Branching: each event<br/>raises the chance of more"]
+    Q --> S["Seasonality: the base rate<br/>itself moves through the day"]
+    B --> BM["lambda(t) = mu + sum of kernel terms<br/>parents and children"]
+    S --> SM["lambda(t) = mu(t)<br/>no event causes another"]
+    BM --> SAME["Both give bursts and<br/>over-dispersed gaps"]
+    SM --> SAME
+    SAME --> FLAT["Fit flat mu with one exponential:<br/>slow rate changes read as excitation,<br/>branching biased up"]
+    SAME --> JOINT["Fit mu(t) and a richer kernel jointly,<br/>compare by BIC, check residuals"]
+    JOINT --> LIM["Still a model choice:<br/>the data cannot name a mechanism"]

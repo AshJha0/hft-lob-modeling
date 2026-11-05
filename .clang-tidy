@@ -1,0 +1,12 @@
+---
+# Advisory in CI: the clang-tidy job reports and never fails the workflow.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  cppcoreguidelines-init-variables,
+  cppcoreguidelines-slicing,
+  misc-redundant-expression,
+  readability-container-size-empty,
+HeaderFilterRegex: 'cpp/(fast|include)/.*'

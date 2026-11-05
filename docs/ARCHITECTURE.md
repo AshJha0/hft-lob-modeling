@@ -83,8 +83,10 @@ flowchart TD
     BS --> GOLD
     GJ --> GOLD
 
-    subgraph FEEDS["lobmod.feeds (Python, hand-built fixtures)"]
+    subgraph FEEDS["lobmod.feeds (Python)"]
         IT["Itch50Parser<br/>framed ITCH 5.0"] --> EV["EventV2 stream<br/>ts_ns, L C M R U E"]
+        PC["CaptureReader<br/>pcap, pcapng"] --> IX["IexParser<br/>DEEP, DEEP+"]
+        IX --> EV
         EV --> IC["BookIntegrityChecker"]
     end
     LV --> RV["read_events_v2_csv / replay_v2<br/>all four ports"]
@@ -110,6 +112,7 @@ flowchart TD
         ENG["Simulator<br/>Hawkes flow, informed takers,<br/>agents behind latency"]
         ACC["attribution, realised spread,<br/>fill by queue"]
         ENG --> ACC
+        CAL["sim.calibrate<br/>criteria checks, fit failed"] --> ENG
     end
     BK --- ENG
     RNG --> ENG
@@ -117,7 +120,9 @@ flowchart TD
 
     subgraph FAST["FastBook (C++, Rust)"]
         FB["FastBook<br/>band, pool, sink"]
+        DEC["ITCH binary decoder<br/>decode, apply"]
         BEN["benchmarks"]
+        DEC --> FB
         FB --> BEN
     end
     BK -. "differential tests" .- FB
@@ -218,10 +223,13 @@ classDiagram
         -ladder, bitset, node pool, id map
         +limit(side, ticks, size, id, sink) status
         +cancel(id) status
+        +rest(side, ticks, size, id) status
+        +reduce(id, by) status
+        +replace(id, new_id, ticks, size) status
         +market(side, size, sink) status
     }
     class Itch50Parser {
-        Python only, hand-built fixtures
+        Python only, fixtures and a real sample replay
         +parse(stream) FeedEvent, TradeReport, StatusMessage
     }
     class BookIntegrityChecker {
@@ -307,7 +315,7 @@ sequenceDiagram
     Note over B: mid()/spread()/microprice() now NaN (empty side, guarded)
 ```
 
-Raw sources for all three diagrams live in `docs/diagrams/*.mmd`.
+Raw sources for every diagram in this document live in `docs/diagrams/*.mmd`.
 
 ## 5. Numerical design decisions and trade-offs
 
@@ -490,10 +498,12 @@ in `API_SPEC.md`. Everything else below is outside the golden contract.
 
 | Layer | Languages | Input | Output |
 |---|---|---|---|
-| `lobmod.feeds` | Python | framed ITCH 5.0 bytes | `EventV2` per symbol, trade and status records; `BookIntegrityChecker` flags impossible book states |
+| `lobmod.feeds` | Python | framed ITCH 5.0 bytes; IEX HIST pcap or pcapng | `EventV2` per symbol, trade and status records, a `LevelBook` for DEEP; `BookIntegrityChecker` flags impossible book states |
 | `lobmod.research` | Python | `BookStates`, `FeatureSet`, event times | standard errors, tests, folds, backtests, kernel and seasonal fits; tables in `research/results*.md` |
 | `lobmod.sim` | Python | assumed `FlowParams`, `AgentSpec` list, seed | `SimResult`, then attribution; tables in `research/results_sim.md` |
+| `lobmod.sim.calibrate` | Python | summary statistics of a symbol | the checks of `research/calibration_criteria.md`; the attempt failed |
 | `FastBook` | C++, Rust | integer-tick orders and a fill callback | status codes; timings in `LATENCY.md` |
+| ITCH binary decoder | C++, Rust | one framed ITCH 5.0 message | a `Message` pointing into the input, no allocation; `apply` mirrors it into a FastBook |
 
 Data flows one way. A feed produces v2 events, and those replay through the same
 `LimitOrderBook` as the bundled files. Because the book matches any add at or
@@ -505,6 +515,195 @@ cash separately from the attribution, so their agreement is a real check.
 
 `FastBook` is a separate implementation for speed. It is not pinned by goldens;
 randomized differential tests hold it to the reference book, and prices outside
-its configured band return an error code. It has `limit`, `cancel` and `market`
-only, so it cannot replay v2 `R`, `U` or `E` events. `research/` scripts and
-`fuzz/` harnesses are tools around the code and nothing depends on them.
+its configured band return an error code. Besides `limit`, `cancel` and `market`
+it has `rest`, `reduce` and `replace`. `rest` adds without matching, because on a
+feed the venue has already matched; the decoder's `apply` uses it, and maps
+executions and partial cancels to `reduce`. There is no `execute` that reports a
+fill, so FastBook mirrors a feed but does not produce trade records.
+`research/` scripts, `bench/run_all.sh` and the `fuzz/` harnesses are tools around
+the code and nothing depends on them. The three harnesses run for 60 seconds each
+in CI, from an empty corpus.
+
+### Real data
+
+`research/real_replay.py` replayed the parser and book on public ITCH 5.0 sample
+files for ten symbols with no parser or book anomalies and every execution at the
+touch. That is internal consistency, not comparison with a venue snapshot. Raw data
+is not redistributed. `research/iex_replay.py` does the same job for IEX HIST
+captures and has run once on one real DEEP+ file (`research/results_iex.md`).
+Calibration of `lobmod.sim` against `research/calibration_criteria.md`
+failed: see the README.
+
+## Diagrams of the later layers
+
+### Order lifecycle
+
+The states one order can pass through in the reference book. FastBook follows the same paths, with `reduce` standing in for `execute`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Validate : limit
+    Validate --> Rejected : bad price, bad size, duplicate id
+    Validate --> Matching : accepted
+    Matching --> Filled : crosses, all size traded
+    Matching --> Resting : remainder joins the tail of its level
+    Resting --> Resting : R reduce or partial E, queue place kept
+    Resting --> Filled : E or a taker trades the last unit
+    Resting --> Cancelled : C, or R of the full size
+    Resting --> Replaced : U, old id leaves
+    Replaced --> Matching : new id, priority lost
+    Rejected --> [*]
+    Filled --> [*]
+    Cancelled --> [*]
+```
+
+### FastBook memory
+
+Everything is allocated once. A cancel goes id map, node, unlink, and touches no other order.
+
+```mermaid
+flowchart LR
+    subgraph IDS["Id map: open addressing, at most half full"]
+        ID["order id to node handle<br/>linear probing, backward-shift delete"]
+    end
+    subgraph POOL["Node pool: one array, free list"]
+        N1["node a<br/>size, side, level, prev, next"]
+        N2["node b"]
+        N3["node c"]
+        N1 <--> N2
+        N2 <--> N3
+    end
+    subgraph SIDE["Per side: bid and ask alike"]
+        LAD["Flat ladder<br/>one entry per tick of the band<br/>head, tail, total, order count"]
+        BITS["Hierarchical bitset<br/>one bit per live level"]
+        BEST["Cached best level,<br/>side totals"]
+        BITS --> BEST
+        BEST --> LAD
+    end
+    ID -- "cancel, reduce, replace" --> N2
+    LAD -- "head of FIFO" --> N1
+    LAD -- "tail of FIFO" --> N3
+    CTOR["Constructor<br/>only allocation, only throw"] -.-> POOL
+    CTOR -.-> LAD
+    CTOR -.-> ID
+```
+
+### Simulator event loop
+
+Both delays with a late cancel: the quote was hit while the cancel was travelling.
+
+```mermaid
+sequenceDiagram
+    participant M as Book and flow (clock-time heap)
+    participant D as Market-data delay
+    participant A as Agent strategy
+    participant O as Order-entry delay
+
+    M->>D: touch or fair value changes at t
+    D->>A: view arrives at t + md_latency
+    A->>A: decide on the stale view
+    A->>O: cancel and new quote at t1
+    Note over M: flow keeps running while messages travel
+    M->>M: taker fills the old quote at t2, before t1 + oe_latency
+    M->>D: fill report leaves at t2
+    O->>M: cancel lands at t1 + oe_latency
+    Note over M: order already gone, late_cancels + 1
+    O->>M: new quote lands, post-only
+    alt it would cross
+        M->>D: reject, rejects + 1
+    else it rests
+        M->>M: lots ahead logged, joins the tail
+    end
+    D->>A: fill report at t2 + md_latency updates inventory
+```
+
+### P&L attribution
+
+The three terms add up exactly, and cash is booked by a separate route.
+
+```mermaid
+flowchart LR
+    F["Fill: signed size q, price p"] --> M0["m0: mid just before the fill"]
+    M0 --> MH["mh: mid one horizon later"]
+    MH --> MT["mT: mid at the end"]
+    F --> S["spread = q (m0 - p)<br/>earned at the fill"]
+    M0 --> AD["adverse = q (mh - m0)<br/>the move straight after"]
+    MH --> INV["inventory = q (mT - mh)<br/>holding the position"]
+    S --> SUM["sum over fills, less fees<br/>= total"]
+    AD --> SUM
+    INV --> SUM
+    CASH["Booked separately:<br/>cash + position x mT - fees"] --> CHK{"equal?"}
+    SUM --> CHK
+    CHK --> OK["a real check,<br/>two independent routes"]
+```
+
+### Feed message to book event
+
+In ITCH and DEEP+ an execution gives both a book event at the resting price and a trade record. DEEP has no order ids, so it feeds a level book with no queue.
+
+```mermaid
+flowchart LR
+    subgraph ITCH["ITCH 5.0, order by order"]
+        IA["A, F add"]
+        IE["E, C executed"]
+        IX["X partial cancel"]
+        ID["D delete"]
+        IU["U replace"]
+        IP["P, Q hidden or cross trade"]
+    end
+    subgraph DEEPP["IEX DEEP+, displayed orders"]
+        Xa["a add"]
+        XL["L executed"]
+        XM["M modify"]
+        XR["R delete"]
+        XC["C clear book"]
+        XT["T non-displayed trade"]
+    end
+    subgraph DEEP["IEX DEEP, price levels"]
+        D85["8, 5 level update"]
+        DT["T every fill"]
+    end
+    subgraph OUT["Output"]
+        L["event L"]
+        E["event E, resting price"]
+        R["event R"]
+        C["event C"]
+        U["event U"]
+        TR["trade record only,<br/>book untouched"]
+        LB["LevelBook, no queue"]
+    end
+    IA --> L
+    IE --> E
+    IE --> TR
+    IX --> R
+    ID --> C
+    IU --> U
+    IP --> TR
+    Xa --> L
+    XL --> E
+    XL --> TR
+    XM -- "keeps priority, smaller, same price" --> R
+    XM -- "otherwise" --> U
+    XR --> C
+    XC -- "one per live order" --> C
+    XT --> TR
+    D85 --> LB
+    DT --> TR
+```
+
+### Branching against seasonality
+
+Two different causes give bursts that look alike, which is why the fits have to be joint.
+
+```mermaid
+flowchart TB
+    Q["Events cluster in time. Why?"] --> B["Branching: each event<br/>raises the chance of more"]
+    Q --> S["Seasonality: the base rate<br/>itself moves through the day"]
+    B --> BM["lambda(t) = mu + sum of kernel terms<br/>parents and children"]
+    S --> SM["lambda(t) = mu(t)<br/>no event causes another"]
+    BM --> SAME["Both give bursts and<br/>over-dispersed gaps"]
+    SM --> SAME
+    SAME --> FLAT["Fit flat mu with one exponential:<br/>slow rate changes read as excitation,<br/>branching biased up"]
+    SAME --> JOINT["Fit mu(t) and a richer kernel jointly,<br/>compare by BIC, check residuals"]
+    JOINT --> LIM["Still a model choice:<br/>the data cannot name a mechanism"]
+```

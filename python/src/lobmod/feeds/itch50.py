@@ -1,9 +1,9 @@
 """Streaming parser for Nasdaq TotalView-ITCH 5.0 files.
 
-**Verification status: this parser has been checked only against byte fixtures
-built by hand from the public specification, never against a real ITCH file.**
-Field offsets, and every claim below about how real files behave, are therefore
-unconfirmed until it has run on one.
+**Verification status: tested on fixtures built by hand from the public
+specification, and run once on one real sample file for ten symbols
+with no anomalies.**  That is internal consistency only: one file, a few symbols,
+and no comparison with an independent book or a reference parser.
 
 Format
 ------
@@ -407,7 +407,7 @@ class BookIntegrityChecker:
         self.book = LimitOrderBook(tick_size=1.0, record_trades=False)
         self.strict = bool(strict)
         self.counts: Counter = Counter()
-        self._held: Set[int] = set()
+        self._held: Dict[int, int] = {}  # order id -> remaining size
 
     def _would_cross(self, side: str, price: int) -> bool:
         if side == "B":
@@ -431,11 +431,11 @@ class BookIntegrityChecker:
         try:
             if event.etype == "L" and self._would_cross(event.side, event.price):
                 self._fail("crossed", f"add of order {event.order_id} at {event.price}")
-                self._held.add(event.order_id)
+                self._held[event.order_id] = event.size
             elif event.etype == "U" and self._would_cross(event.side, event.price):
                 self._fail("crossed", f"replace to order {event.new_order_id} at {event.price}")
                 self.book.cancel(event.order_id)
-                self._held.add(event.new_order_id)
+                self._held[event.new_order_id] = event.size
             else:
                 apply_event_v2(self.book, event)
         except ItchError:
@@ -448,11 +448,15 @@ class BookIntegrityChecker:
 
     def _apply_held(self, event: EventV2) -> None:
         self.counts["skipped"] += 1
+        if event.etype in ("E", "R"):
+            self._held[event.order_id] -= event.size
+            if self._held[event.order_id] <= 0:
+                del self._held[event.order_id]
         if event.etype in ("C", "U"):
-            self._held.discard(event.order_id)
+            self._held.pop(event.order_id, None)
         if event.etype == "U":
             if self._would_cross(event.side, event.price):
-                self._held.add(event.new_order_id)
+                self._held[event.new_order_id] = event.size
             else:
                 self.book.limit_ticks(event.side, event.price, event.size, event.new_order_id)
 

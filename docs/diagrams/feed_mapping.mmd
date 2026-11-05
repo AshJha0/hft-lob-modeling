@@ -1,0 +1,47 @@
+flowchart LR
+    subgraph ITCH["ITCH 5.0, order by order"]
+        IA["A, F add"]
+        IE["E, C executed"]
+        IX["X partial cancel"]
+        ID["D delete"]
+        IU["U replace"]
+        IP["P, Q hidden or cross trade"]
+    end
+    subgraph DEEPP["IEX DEEP+, displayed orders"]
+        Xa["a add"]
+        XL["L executed"]
+        XM["M modify"]
+        XR["R delete"]
+        XC["C clear book"]
+        XT["T non-displayed trade"]
+    end
+    subgraph DEEP["IEX DEEP, price levels"]
+        D85["8, 5 level update"]
+        DT["T every fill"]
+    end
+    subgraph OUT["Output"]
+        L["event L"]
+        E["event E, resting price"]
+        R["event R"]
+        C["event C"]
+        U["event U"]
+        TR["trade record only,<br/>book untouched"]
+        LB["LevelBook, no queue"]
+    end
+    IA --> L
+    IE --> E
+    IE --> TR
+    IX --> R
+    ID --> C
+    IU --> U
+    IP --> TR
+    Xa --> L
+    XL --> E
+    XL --> TR
+    XM -- "keeps priority, smaller, same price" --> R
+    XM -- "otherwise" --> U
+    XR --> C
+    XC -- "one per live order" --> C
+    XT --> TR
+    D85 --> LB
+    DT --> TR

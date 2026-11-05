@@ -197,13 +197,21 @@ public:
         return kNone;
     }
 
+    /// The slot holding `id`, or the empty slot that ends its probe run.  One
+    /// walk then serves both the duplicate check and the insert.
+    std::size_t probe(std::int64_t id) const {
+        std::size_t i = home(id);
+        while (slots_[i].handle1 != 0 && slots_[i].id != id) i = (i + 1) & mask_;
+        return i;
+    }
+
+    bool occupied(std::size_t slot) const { return slots_[slot].handle1 != 0; }
+
     std::uint32_t handle_at(std::size_t slot) const { return slots_[slot].handle1 - 1; }
 
-    /// The id must be absent.
-    void insert(std::int64_t id, std::uint32_t handle) {
-        std::size_t i = home(id);
-        while (slots_[i].handle1 != 0) i = (i + 1) & mask_;
-        slots_[i] = Slot{id, handle + 1};
+    /// `slot` must come from probe() with no map change since.
+    void insert_at(std::size_t slot, std::int64_t id, std::uint32_t handle) {
+        slots_[slot] = Slot{id, handle + 1};
     }
 
     /// Backward-shift deletion: pull later entries of the probe run into the
@@ -269,16 +277,79 @@ public:
         if (price < min_price_ || price - min_price_ >= n_levels_) {
             return {Status::OutOfBand, 0};
         }
-        if (ids_.find(id) != detail::IdMap::kNone) return {Status::DuplicateId, 0};
+        const std::size_t slot = ids_.probe(id);
+        if (ids_.occupied(slot)) return {Status::DuplicateId, 0};
         SideState& own = state(side);
         if (size > kMaxTicks - own.total) return {Status::SideOverflow, 0};
         if (free_ == kNil) return {Status::PoolFull, 0};
 
-        const std::int64_t rest = match(side, size, price, true, sink);
-        if (rest > 0) {
-            rest_order(own, side, static_cast<std::uint32_t>(price - min_price_), rest, id);
+        const auto level = static_cast<std::uint32_t>(price - min_price_);
+        if (!crosses(side, price)) { // no matching, so the map and slot stay as probed
+            rest_order(own, side, level, size, id, slot);
+            return {Status::Ok, size};
         }
-        return {Status::Ok, rest};
+        const std::int64_t left = match(side, size, price, true, sink);
+        if (left > 0) rest_order(own, side, level, left, id, ids_.probe(id));
+        return {Status::Ok, left};
+    }
+
+    /// Add an order without matching, for mirroring a feed: the venue has
+    /// already decided what rests, and a feed book can be locked or crossed
+    /// before the open.  Same refusals as limit(); value is the rested size.
+    OpResult rest(Side side, std::int64_t price, std::int64_t size, std::int64_t id) noexcept {
+        if (size <= 0 || size > kMaxTicks) return {Status::BadSize, 0};
+        if (price < 1 || price > kMaxTicks) return {Status::BadPrice, 0};
+        if (price < min_price_ || price - min_price_ >= n_levels_) {
+            return {Status::OutOfBand, 0};
+        }
+        const std::size_t slot = ids_.probe(id);
+        if (ids_.occupied(slot)) return {Status::DuplicateId, 0};
+        SideState& own = state(side);
+        if (size > kMaxTicks - own.total) return {Status::SideOverflow, 0};
+        if (free_ == kNil) return {Status::PoolFull, 0};
+        rest_order(own, side, static_cast<std::uint32_t>(price - min_price_), size, id, slot);
+        return {Status::Ok, size};
+    }
+
+    /// Move a resting order to a new id, price and size on the same side; it
+    /// loses its queue place.  `new_id` may equal `id`.  Any refusal changes
+    /// nothing.  Value is the rested size.
+    OpResult replace(std::int64_t id, std::int64_t new_id, std::int64_t price,
+                     std::int64_t size) noexcept {
+        const std::size_t slot = ids_.find(id);
+        if (slot == detail::IdMap::kNone) return {Status::UnknownId, 0};
+        if (size <= 0 || size > kMaxTicks) return {Status::BadSize, 0};
+        if (price < 1 || price > kMaxTicks) return {Status::BadPrice, 0};
+        if (price < min_price_ || price - min_price_ >= n_levels_) {
+            return {Status::OutOfBand, 0};
+        }
+        if (new_id != id && ids_.find(new_id) != detail::IdMap::kNone) {
+            return {Status::DuplicateId, 0};
+        }
+        const Node& n = nodes_[ids_.handle_at(slot)];
+        const Side side = n.side;
+        if (size > kMaxTicks - (state(side).total - n.size)) return {Status::SideOverflow, 0};
+        cancel(id);
+        return rest(side, price, size, new_id);
+    }
+
+    /// Take `by` off a resting order, keeping its queue place; reducing to zero
+    /// removes it.  Value is the size left.  BadSize if `by` is not in
+    /// [1, resting size], and the order is then unchanged.
+    OpResult reduce(std::int64_t id, std::int64_t by) noexcept {
+        const std::size_t slot = ids_.find(id);
+        if (slot == detail::IdMap::kNone) return {Status::UnknownId, 0};
+        Node& n = nodes_[ids_.handle_at(slot)];
+        if (by <= 0 || by > n.size) return {Status::BadSize, 0};
+        if (by == n.size) {
+            cancel(id);
+            return {Status::Ok, 0};
+        }
+        SideState& s = state(n.side);
+        n.size -= by;
+        s.levels[n.level].total -= by;
+        s.total -= by;
+        return {Status::Ok, n.size};
     }
 
     /// Submit a market order; value is the unfilled size.
@@ -422,8 +493,15 @@ private:
         }
     }
 
+    bool crosses(Side side, std::int64_t price) const {
+        const SideState& opp = state(side == Side::Buy ? Side::Sell : Side::Buy);
+        if (opp.best < 0) return false;
+        const std::int64_t touch = min_price_ + opp.best;
+        return side == Side::Buy ? touch <= price : touch >= price;
+    }
+
     void rest_order(SideState& s, Side side, std::uint32_t level, std::int64_t size,
-                    std::int64_t id) {
+                    std::int64_t id, std::size_t slot) {
         const std::uint32_t h = free_;
         Node& n = nodes_[h];
         free_ = n.next;
@@ -446,7 +524,7 @@ private:
         lv.total += size;
         s.total += size;
         ++s.orders;
-        ids_.insert(id, h);
+        ids_.insert_at(slot, id, h);
     }
 
     template <class Sink>
