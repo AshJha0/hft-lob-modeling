@@ -70,14 +70,20 @@ public final class Lcg64 {
      * Geometric variate on {0, 1, 2, ...}: number of failures before success,
      * via the pinned inversion {@code floor(log1p(-u) / log1p(-p))}.
      *
-     * @throws IllegalArgumentException if {@code p} is not in (0, 1)
+     * @throws IllegalArgumentException if {@code p} is not in (0, 1), or the
+     *     result does not fit a {@code long} (quotient &ge; 2^63)
      */
     public long geometric(double p) {
         if (!(p > 0.0 && p < 1.0)) {
             throw new IllegalArgumentException("p must be in (0, 1), got " + p);
         }
         double u = uniform();
-        return (long) Math.floor(Math.log1p(-u) / Math.log1p(-p));
+        double x = Math.log1p(-u) / Math.log1p(-p);
+        if (x >= 0x1p63) {
+            throw new IllegalArgumentException(
+                    "geometric variate " + x + " for p=" + p + " exceeds the 64-bit range");
+        }
+        return (long) Math.floor(x);
     }
 
     /**

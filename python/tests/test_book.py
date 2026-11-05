@@ -398,3 +398,88 @@ def test_events_csv_round_trip(tmp_path, events):
     assert lm.read_events_csv(path) == events
     with open(path, "rb") as fh, open(os.path.join(DATA_DIR, "lob_events.csv"), "rb") as ref:
         assert fh.read() == ref.read()  # byte-identical to the bundled file
+
+
+# ---- 64-bit edge rules pinned in API_SPEC 2.1/2.3 --------------------------
+
+
+def _quoted(bid, ask):
+    b = LimitOrderBook()
+    b.limit_ticks("B", bid, 1, 1)
+    b.limit_ticks("S", ask, 1, 2)
+    return b
+
+
+def test_mid_is_exact_sum_rounded_once():
+    assert _quoted(5 * 10**18, 5 * 10**18 + 1).mid() == 5e18
+    assert _quoted(2**53 + 1, 2**53 + 2).mid() == float(2**53 + 2)
+    assert _quoted(2**62, 2**62 + 1025).mid() == float(2**62 + 1024)
+
+
+def test_side_capacity_rejected_before_mutation():
+    b = LimitOrderBook()
+    b.limit_ticks("B", 100, lm.MAX_TICKS, 1)
+    with pytest.raises(ValueError, match="MAX_TICKS"):
+        b.limit_ticks("B", 100, lm.MAX_TICKS, 2)
+    with pytest.raises(ValueError, match="MAX_TICKS"):
+        b.limit_ticks("B", 99, 1, 2)
+    assert b.total_size("B") == lm.MAX_TICKS and b.n_orders("B") == 1
+    assert b.best_bid_size() == lm.MAX_TICKS and b.depth("B", 5) == lm.MAX_TICKS
+    b.market("S", 1)  # a fill frees capacity
+    b.limit_ticks("B", 99, 1, 2)
+    assert b.total_size("B") == lm.MAX_TICKS
+    b.cancel(1)  # so does a cancel
+    assert b.total_size("B") == 1
+    b.limit_ticks("S", 200, lm.MAX_TICKS, 3)
+    with pytest.raises(ValueError, match="MAX_TICKS"):
+        b.limit_ticks("S", 200, 1, 4)
+    assert b.total_size("S") == lm.MAX_TICKS
+
+
+def test_grid_tolerance_is_capped_below_half_a_tick():
+    b = LimitOrderBook(0.01)
+    with pytest.raises(ValueError, match="not a multiple"):
+        b.limit("B", 5000000.004, 1, 1)
+    b.limit("B", 5000000.01, 1, 1)
+    assert b.best_bid() == 500000001
+
+
+def test_grid_validation_stops_at_2_pow_52():
+    b = LimitOrderBook(1.0)
+    with pytest.raises(ValueError, match="limit_ticks"):
+        b.limit("B", float(2**52), 1, 1)
+    b.limit("B", float(2**52 - 1), 1, 1)
+    assert b.best_bid() == 2**52 - 1
+
+
+def test_infinite_ratio_is_an_error():
+    with pytest.raises(ValueError):
+        LimitOrderBook(1e-300).limit("B", 1e308, 1, 1)
+
+
+def test_geometric_out_of_range_is_an_error():
+    with pytest.raises(ValueError, match="64-bit"):
+        lm.Lcg64(1).geometric(1e-300)
+
+
+def test_rosenbrock_4d_iteration_count_is_pinned():
+    def rosen(x):
+        total = 0.0
+        for i in range(len(x) - 1):
+            total += 100.0 * (x[i + 1] - x[i] ** 2) ** 2 + (1.0 - x[i]) ** 2
+        return total
+
+    assert lm.nelder_mead(rosen, [-1.2, 1.0, 0.7, 1.3]).n_iter == 308
+
+
+def test_csv_strips_exactly_one_carriage_return(tmp_path):
+    from lobmod.replay import read_csv_lines
+
+    p = tmp_path / "x.csv"
+    p.write_bytes(b"t\r\n1\r\n")
+    assert read_csv_lines(str(p), "t") == ["1"]
+    p.write_bytes(b"t\r\r\n1\r\n")
+    with pytest.raises(ValueError, match="header"):
+        read_csv_lines(str(p), "t")
+    p.write_bytes(b"t\n1\r\r\n")
+    assert read_csv_lines(str(p), "t") == ["1\r"]  # field parsers then reject it

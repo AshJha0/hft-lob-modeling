@@ -4,7 +4,7 @@
 /// \file zi.hpp
 /// \brief Zero-intelligence order-flow generator (pinned, seeded).
 ///
-/// Smith-Farmer style flow: Poisson event-type rates around the best quotes
+/// Flow loosely inspired by Smith et al. (2003), not their model: Poisson event-type rates around the best quotes
 /// with geometric placement of passive limit orders.  Everything is pinned —
 /// RNG (Lcg64), draw order, placement and size formulas — so that every
 /// language regenerates the identical bundled 5000-event stream.

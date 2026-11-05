@@ -22,11 +22,15 @@
 //! empty (guarded, never an error).
 //!
 //! Tick conversion (pinned, identical in every port): `ratio = price / tick`,
-//! rounded half up; accepted iff `|ratio - ticks| <= 1e-9 * max(1, ratio)`
-//! and `1 <= ticks <= MAX_TICKS` (9e18).  A price that rounds to 0 ticks or
-//! would overflow a signed 64-bit tick count is an error — never a negative
-//! price and never an unbounded market order.  [`LimitOrderBook::limit_ticks`]
-//! takes the integer tick count directly (the replay path).
+//! must be below `2^52`, rounded half up; accepted iff
+//! `|ratio - ticks| <= min(1e-9 * max(1, ratio), 0.01)` and `ticks >= 1`.  A
+//! bad price is an error — never a negative price and never an unbounded
+//! market order.  [`LimitOrderBook::limit_ticks`] takes the integer tick
+//! count directly, up to `MAX_TICKS` (9e18; the replay path).
+//!
+//! Size capacity (pinned): a limit add is rejected before any mutation if the
+//! side's running total plus the submitted size exceeds `MAX_TICKS`, so every
+//! size sum fits an `i64`.
 //!
 //! Memory: `trades` grows for the life of the book; construct with
 //! [`LimitOrderBook::with_options`] (`record_trades = false`) or call
@@ -38,6 +42,10 @@ use crate::error::{LobError, Result};
 
 /// Largest accepted tick count / size (fits a signed 64-bit integer).
 pub const MAX_TICKS: i64 = 9_000_000_000_000_000_000;
+/// At or above this ratio doubles have no fractional bits (2^52).
+const MAX_GRID_RATIO: f64 = 4_503_599_627_370_496.0;
+/// Absolute cap on the grid residual, in ticks.
+const GRID_TOL_CAP: f64 = 0.01;
 
 /// Book side: bids (`B`) or asks (`S`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -90,6 +98,9 @@ pub struct LimitOrderBook {
     asks: BTreeMap<i64, VecDeque<(i64, i64)>>,
     /// order_id -> (side, price ticks)
     orders: HashMap<i64, (Side, i64)>,
+    /// Running total resting size per side (never above `MAX_TICKS`).
+    bid_total: i64,
+    ask_total: i64,
     /// Executed trades as [`Fill`] records, in execution order.
     pub trades: Vec<Fill>,
 }
@@ -120,6 +131,8 @@ impl LimitOrderBook {
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             orders: HashMap::new(),
+            bid_total: 0,
+            ask_total: 0,
             trades: Vec::new(),
         })
     }
@@ -141,8 +154,8 @@ impl LimitOrderBook {
 
     /// Validate that `price` sits on the tick grid and convert it to ticks.
     ///
-    /// Pinned rule: round half up, residual within `1e-9 * max(1, ratio)`,
-    /// result in `[1, MAX_TICKS]`.
+    /// Pinned rule: ratio below `2^52`, round half up, residual within
+    /// `min(1e-9 * max(1, ratio), 0.01)`, result at least 1.
     fn to_ticks(&self, price: f64) -> Result<i64> {
         if !price.is_finite() || price <= 0.0 {
             return Err(LobError::InvalidInput(format!(
@@ -150,11 +163,17 @@ impl LimitOrderBook {
             )));
         }
         let ratio = price / self.tick_size;
+        if ratio >= MAX_GRID_RATIO {
+            return Err(LobError::InvalidInput(format!(
+                "price {price} is {ratio:e} ticks, too large to validate on the grid \
+                 (limit 2^52); use limit_ticks for counts up to MAX_TICKS"
+            )));
+        }
         let mut ticks = ratio.floor();
         if ratio - ticks >= 0.5 {
             ticks += 1.0;
         }
-        if (ratio - ticks).abs() > 1e-9 * ratio.max(1.0) {
+        if (ratio - ticks).abs() > (1e-9 * ratio.max(1.0)).min(GRID_TOL_CAP) {
             return Err(LobError::InvalidInput(format!(
                 "price {price} is not a multiple of tick_size {}",
                 self.tick_size
@@ -165,12 +184,7 @@ impl LimitOrderBook {
                 "price {price} rounds to 0 ticks; prices must be >= 1 tick"
             )));
         }
-        if ticks > MAX_TICKS as f64 {
-            return Err(LobError::InvalidInput(format!(
-                "price {price} is {ticks:e} ticks, above MAX_TICKS"
-            )));
-        }
-        Ok(ticks as i64) // in [1, 9e18]: exact conversion
+        Ok(ticks as i64) // in [1, 2^52]: exact conversion
     }
 
     fn check_ticks(ticks: i64) -> Result<i64> {
@@ -222,10 +236,13 @@ impl LimitOrderBook {
             .unwrap_or(0)
     }
 
-    /// Mid price in ticks, `(bid + ask) / 2`; NaN if either side is empty.
+    /// Mid price in ticks; NaN if either side is empty.
+    ///
+    /// Pinned: the exact integer `bid + ask` (at most 1.8e19, so it fits a
+    /// `u64`) rounded once to the nearest double, then halved.
     pub fn mid(&self) -> f64 {
         match (self.best_bid(), self.best_ask()) {
-            (Some(b), Some(a)) => 0.5 * (b + a) as f64,
+            (Some(b), Some(a)) => 0.5 * (b as u64 + a as u64) as f64,
             _ => f64::NAN,
         }
     }
@@ -291,16 +308,12 @@ impl LimitOrderBook {
         self.orders.contains_key(&order_id)
     }
 
-    /// Total resting size on `side` across all levels.
+    /// Total resting size on `side` across all levels (O(1)).
     pub fn total_size(&self, side: Side) -> i64 {
-        let levels = match side {
-            Side::Bid => &self.bids,
-            Side::Ask => &self.asks,
-        };
-        levels
-            .values()
-            .map(|q| q.iter().map(|o| o.1).sum::<i64>())
-            .sum()
+        match side {
+            Side::Bid => self.bid_total,
+            Side::Ask => self.ask_total,
+        }
     }
 
     /// Number of live resting orders on `side`.
@@ -358,6 +371,10 @@ impl LimitOrderBook {
                 opp.remove(&best);
             }
         }
+        match side {
+            Side::Bid => self.ask_total -= size - remaining,
+            Side::Ask => self.bid_total -= size - remaining,
+        }
         if self.record_trades {
             self.trades.extend(fills.iter().copied());
         }
@@ -374,8 +391,9 @@ impl LimitOrderBook {
     /// Returns `(fills, rested_size)` — `rested_size` is 0 if fully executed.
     ///
     /// # Errors
-    /// [`LobError::InvalidInput`] on bad price/size, a price outside
-    /// `[1, MAX_TICKS]` ticks, or a duplicate live `order_id`.
+    /// [`LobError::InvalidInput`] on bad price/size, an off-grid price, a
+    /// price at or above `2^52` ticks, a duplicate live `order_id`, or a size
+    /// that would take the side's total above `MAX_TICKS`.
     pub fn limit(
         &mut self,
         side: Side,
@@ -408,6 +426,12 @@ impl LimitOrderBook {
                 "order_id {order_id} is already live in the book"
             )));
         }
+        if size > MAX_TICKS - self.total_size(side) {
+            return Err(LobError::InvalidInput(format!(
+                "size {size} would take side {} total resting size above MAX_TICKS",
+                side.code()
+            )));
+        }
         let (fills, remaining) = self.execute(side, size, Some(ticks));
         if remaining > 0 {
             let levels = match side {
@@ -419,6 +443,10 @@ impl LimitOrderBook {
                 .or_default()
                 .push_back((order_id, remaining));
             self.orders.insert(order_id, (side, ticks));
+            match side {
+                Side::Bid => self.bid_total += remaining,
+                Side::Ask => self.ask_total += remaining,
+            }
         }
         Ok((fills, remaining))
     }
@@ -444,6 +472,10 @@ impl LimitOrderBook {
         }
         if queue.is_empty() {
             levels.remove(&ticks);
+        }
+        match side {
+            Side::Bid => self.bid_total -= removed,
+            Side::Ask => self.ask_total -= removed,
         }
         Ok(removed)
     }

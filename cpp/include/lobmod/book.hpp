@@ -18,11 +18,15 @@
 /// side is empty (guarded, never a crash).
 ///
 /// Tick conversion (pinned, identical in every port): ratio = price / tick,
-/// rounded half up; accepted iff |ratio - ticks| <= 1e-9 * max(1, ratio) and
-/// 1 <= ticks <= kMaxTicks (9e18).  A price that rounds to 0 ticks or would
-/// overflow a signed 64-bit tick count is an error — never a negative price
-/// and never an unbounded market order.  limit_ticks() takes the integer
-/// tick count directly (the replay path).
+/// must be below 2^52, rounded half up; accepted iff
+/// |ratio - ticks| <= min(1e-9 * max(1, ratio), 0.01) and ticks >= 1.  A bad
+/// price is an error — never a negative price and never an unbounded market
+/// order.  limit_ticks() takes the integer tick count directly, up to
+/// kMaxTicks (9e18; the replay path).
+///
+/// Size capacity (pinned): a limit add is rejected before any mutation if the
+/// side's running total plus the submitted size exceeds kMaxTicks, so every
+/// size sum fits an int64.
 ///
 /// Memory: trades() and log() grow for the life of the book; construct with
 /// record_trades = false or call clear_history() for long sessions.
@@ -65,7 +69,7 @@ public:
     static constexpr char SELL = 'S';
 
     /// \param tick_size positive finite tick; every incoming price must be an
-    ///        integer multiple of it (validated to 1e-9 relative precision).
+    ///        integer multiple of it (see the pinned tick conversion above).
     /// \param record_trades keep every Fill in trades() and every event in
     ///        log(); false disables both (matching is unaffected).
     /// \throws std::invalid_argument on a non-positive or non-finite tick.
@@ -80,7 +84,8 @@ public:
     /// Total resting size at the best ask level (0 if the side is empty).
     std::int64_t best_ask_size() const;
 
-    /// Mid price (bid + ask) / 2 in ticks; NaN if either side is empty.
+    /// Mid price in ticks: the exact integer bid + ask rounded once to the
+    /// nearest double, then halved; NaN if either side is empty.
     double mid() const;
     /// Bid-ask spread in ticks; NaN if either side is empty.
     double spread() const;
@@ -99,7 +104,7 @@ public:
     std::vector<std::int64_t> order_ids(char side) const;
     /// True if the order id is currently resting in the book.
     bool has_order(std::int64_t order_id) const;
-    /// Total resting size on a side across all levels.
+    /// Total resting size on a side across all levels (O(1)).
     std::int64_t total_size(char side) const;
     /// Number of live resting orders on a side.
     std::int64_t n_orders(char side) const;
@@ -109,8 +114,9 @@ public:
     /// resting orders' prices, never trading through its own limit; the
     /// unfilled remainder rests at the limit price.
     /// \returns (fills, rested size) — rested size is 0 if fully executed.
-    /// \throws std::invalid_argument on bad side/price/size or duplicate
-    ///         live order id.
+    /// \throws std::invalid_argument on bad side/price/size, an off-grid
+    ///         price, a price at or above 2^52 ticks, a duplicate live order
+    ///         id, or a size taking the side's total above kMaxTicks.
     std::pair<std::vector<Fill>, std::int64_t>
     limit(char side, double price, std::int64_t size, std::int64_t order_id);
 
@@ -163,6 +169,9 @@ private:
     bool record_trades_;
     Side bids_;
     Side asks_;
+    /// running total resting size per side (never above kMaxTicks)
+    std::int64_t bid_total_ = 0;
+    std::int64_t ask_total_ = 0;
     /// order id -> (side, price ticks) for live resting orders
     std::unordered_map<std::int64_t, std::pair<char, std::int64_t>> orders_;
     std::vector<Fill> trades_;

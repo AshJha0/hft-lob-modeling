@@ -13,7 +13,7 @@ look the way they do.
 | `book` (`LimitOrderBook`) | Price-time priority matching on an integer tick grid: limit adds (incl. marketable/crossed), cancels by id, market orders with partial fills; mid / spread / microprice / depth, NaN-guarded | — |
 | `replay` | Event schema (`L`/`C`/`M`), event CSV i/o under the pinned strict parsing rules, deterministic replay (`tick_size = 1`, prices are tick counts) producing per-event `BookStates` arrays | `book`, `csv` |
 | `csv` (C++/Rust/Java module; Python helpers in `replay`) | Shared pinned CSV primitives: header check, CRLF strip, trailing-blank-line rule, strict `-?[0-9]+` / finite-float field grammar | — |
-| `zi` | Zero-intelligence flow generator (Smith-Farmer style): pinned rates, geometric placement, seeded; maintains an internal book so quotes evolve exactly as a replay would | `book`, `replay`, `rng` |
+| `zi` | Zero-intelligence flow generator (inspired by Smith et al. 2003, not the same model): pinned rates, geometric placement, seeded; maintains an internal book so quotes evolve exactly as a replay would | `book`, `replay`, `rng` |
 | `hawkes` | Uni/bivariate exponential-kernel Hawkes: O(N) log-likelihood recursions plus O(N²) brute-force references, Ogata-thinning simulation (bounded by `MAX_CANDIDATES`), MLE on log-parameters with exposed pure objectives and a `maxiter` cap, time-rescaling residuals, branching diagnostics, `t` / `t,type` CSV i/o | `neldermead`, `rng`, `csv` |
 | `neldermead` | Native derivative-free minimizer, pinned to the coefficient (Lagarias 1998 decision tree, stable tie-break, scipy initial-simplex rule) | — |
 | `gof` | KS statistic vs Exp(1) and the pinned two-branch (100-term alternating / 100-term dual) Kolmogorov p-value with Stephens correction | — |
@@ -358,7 +358,7 @@ for out-of-range CSV integers (never `std::out_of_range`).
    files; Rust/Java writers round-trip exactly); retraining the NN reproduces
    goldens bit-for-tolerance.
 
-Counts after the review pass: Python 101, C++ 90, Rust 94, Java 84 tests.
+Current test counts: see CI.
 
 ## 8. Performance notes
 

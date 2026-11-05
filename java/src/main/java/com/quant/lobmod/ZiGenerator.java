@@ -7,7 +7,7 @@ import java.util.OptionalLong;
 /**
  * Zero-intelligence order-flow generator (pinned, seeded).
  *
- * <p>Smith-Farmer style flow: Poisson event-type rates around the best quotes
+ * <p>Flow loosely inspired by Smith et al. (2003), not their model: Poisson event-type rates around the best quotes
  * with geometric placement of passive limit orders. Everything is pinned —
  * RNG ({@link Lcg64}), draw order, placement and size formulas — so that
  * every language regenerates the identical 5000-event stream.</p>

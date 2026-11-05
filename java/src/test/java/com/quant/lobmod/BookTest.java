@@ -470,4 +470,91 @@ public class BookTest {
         assertArrayEquals(Files.readAllBytes(TestData.DATA.resolve("lob_events.csv")),
                 Files.readAllBytes(p));
     }
+
+    // ---- 64-bit edge rules pinned in API_SPEC 2.1/2.3 ----------------------
+
+    private static LimitOrderBook quoted(long bid, long ask) {
+        LimitOrderBook b = new LimitOrderBook();
+        b.limitTicks('B', bid, 1, 1);
+        b.limitTicks('S', ask, 1, 2);
+        return b;
+    }
+
+    @Test
+    public void midIsExactSumRoundedOnce() {
+        assertEquals(5e18, quoted(5_000_000_000_000_000_000L, 5_000_000_000_000_000_001L).mid(), 0.0);
+        long p53 = 1L << 53;
+        long p62 = 1L << 62;
+        assertEquals((double) (p53 + 2), quoted(p53 + 1, p53 + 2).mid(), 0.0);
+        assertEquals((double) (p62 + 1024), quoted(p62, p62 + 1025).mid(), 0.0);
+    }
+
+    @Test
+    public void spreadSubtractsAsLong() {
+        long p53 = 1L << 53;
+        assertEquals(1.0, quoted(p53 + 1, p53 + 2).spread(), 0.0);
+    }
+
+    @Test
+    public void sideCapacityRejectedBeforeMutation() {
+        long m = LimitOrderBook.MAX_TICKS;
+        LimitOrderBook b = new LimitOrderBook();
+        b.limitTicks('B', 100, m, 1);
+        assertThrows(IllegalArgumentException.class, () -> b.limitTicks('B', 100, m, 2));
+        assertThrows(IllegalArgumentException.class, () -> b.limitTicks('B', 99, 1, 2));
+        assertEquals(m, b.totalSize('B'));
+        assertEquals(1, b.nOrders('B'));
+        assertEquals(m, b.bestBidSize());
+        assertEquals(m, b.depth('B', 5));
+        b.market('S', 1); // a fill frees capacity
+        b.limitTicks('B', 99, 1, 2);
+        assertEquals(m, b.totalSize('B'));
+        b.cancel(1); // so does a cancel
+        assertEquals(1, b.totalSize('B'));
+        b.limitTicks('S', 200, m, 3);
+        assertThrows(IllegalArgumentException.class, () -> b.limitTicks('S', 200, 1, 4));
+        assertEquals(m, b.totalSize('S'));
+    }
+
+    @Test
+    public void gridToleranceIsCappedBelowHalfATick() {
+        LimitOrderBook b = new LimitOrderBook(0.01);
+        assertThrows(IllegalArgumentException.class, () -> b.limit('B', 5000000.004, 1, 1));
+        b.limit('B', 5000000.01, 1, 1);
+        assertEquals(500000001L, b.bestBid().getAsLong());
+    }
+
+    @Test
+    public void gridValidationStopsAt2Pow52() {
+        LimitOrderBook b = new LimitOrderBook(1.0);
+        assertThrows(IllegalArgumentException.class, () -> b.limit('B', 4503599627370496.0, 1, 1));
+        b.limit('B', 4503599627370495.0, 1, 1);
+        assertEquals(4503599627370495L, b.bestBid().getAsLong());
+    }
+
+    @Test
+    public void infiniteRatioIsAnError() {
+        LimitOrderBook b = new LimitOrderBook(1e-300);
+        assertThrows(IllegalArgumentException.class, () -> b.limit('B', 1e308, 1, 1));
+    }
+
+    @Test
+    public void geometricOutOfRangeIsAnError() {
+        Lcg64 c = new Lcg64(1);
+        assertThrows(IllegalArgumentException.class, () -> c.geometric(1e-300));
+    }
+
+    @Test
+    public void rosenbrock4dIterationCountIsPinned() {
+        NelderMead.Result r = NelderMead.minimize(x -> {
+            double total = 0.0;
+            for (int i = 0; i + 1 < x.length; i++) {
+                double a = x[i + 1] - x[i] * x[i];
+                double c = 1.0 - x[i];
+                total += 100.0 * (a * a) + c * c;
+            }
+            return total;
+        }, new double[] {-1.2, 1.0, 0.7, 1.3});
+        assertEquals(308, r.nIter());
+    }
 }

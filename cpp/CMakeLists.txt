@@ -7,6 +7,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_compile_options(-Wall -Wextra)
 
+option(LOBMOD_SANITIZE "Build with AddressSanitizer and UBSan" OFF)
+if(LOBMOD_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-sanitize-recover=all
+                        -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 # The bundled datasets live one level above the cpp/ directory; tests and the
 # demo both resolve them through this compile definition.
 set(LOBMOD_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../data")

@@ -1,5 +1,9 @@
 # High-Frequency LOB Modeling (`lobmod`)
 
+**This is a synthetic research and teaching lab.** It uses no real market data,
+measures no latency, and is not a trading system. Every result below describes
+simulated data. See [Limits](#limits) and [Known results](#known-results).
+
 A four-language, cross-verified laboratory for high-frequency market microstructure:
 a price-time-priority **limit order book** simulator with deterministic replay, a pinned
 **zero-intelligence order-flow generator**, **Hawkes processes** (univariate and
@@ -12,7 +16,7 @@ transaction costs. (Spoiler from the bundled data: gross +45.0 ticks, net −139
 Every numerical path is pinned by `API_SPEC.md` and verified against
 `data/golden/golden.json` (18 golden cases) in all four languages, plus
 per-language suites of edge-case, invariant and cross-language parity tests
-(Python 101, C++ 90, Rust 94, Java 84 tests — all passing; see "Testing").
+(current counts: see CI).
 
 ## Feature matrix
 
@@ -66,7 +70,7 @@ All commands are for a fresh Linux clone (the `.sh` scripts are invoked with
 cd python
 pip install -r requirements.txt          # numpy, scipy, pytest
 PYTHONPATH=src python3 demo.py           # end-to-end demo
-PYTHONPATH=src python3 -m pytest -q      # 101 tests incl. the golden suite
+PYTHONPATH=src python3 -m pytest -q      # incl. the golden suite
 ```
 
 ### C++ (C++17, CMake >= 3.16, g++ 13, GoogleTest)
@@ -95,7 +99,7 @@ with `-O2` because the 800-epoch golden pipeline is too slow unoptimized.
 cd java
 bash build.sh    # javac -Xlint:all -Werror everything into out/
 bash demo.sh     # runs the demo main
-bash test.sh     # JUnitCore on all *Test classes (84 tests)
+bash test.sh     # JUnitCore on all *Test classes
 ```
 
 ## Demo output (Python, truncated)
@@ -119,19 +123,19 @@ events with an empty side (mid = NaN, guarded): 61
 --------------------------------------------------------------------
 2. Univariate Hawkes fit (data/hawkes_uni.csv)
 --------------------------------------------------------------------
-1211 events on [0, 1000]  (min gap 0.0005 vs mean 0.822 — self-exciting bursts)
+1211 events on [0, 1000]  (gap CV 1.63 vs 1 for Poisson)
 
   param        true    fitted
   mu          0.500    0.5052
   alpha       1.000    0.9795
   beta        1.600    1.6792
   branching ratio alpha/beta = 0.5833  (stationary; 58% of events are endogenous offspring)
-  loglik -711.77, Nelder-Mead converged=True (172 iters)
+  loglik -711.77, Nelder-Mead converged=True (173 iters)
 
 --------------------------------------------------------------------
 3. Goodness of fit — time-rescaling residuals + KS
 --------------------------------------------------------------------
-  fitted params : KS stat 0.0172, p-value 0.8632 -> PASS (no rejection at 5%)
+  fitted params : KS stat 0.0172, p-value 0.8632 -> no rejection (test is weak with fitted parameters)
   wrong params  : KS stat 0.1149, p-value 2.05e-14 -> REJECT (sanity)
 
 --------------------------------------------------------------------
@@ -163,8 +167,10 @@ training loss: 1.0806 (epoch 1) -> 0.6760 (epoch 800)
 --------------------------------------------------------------------
 trading the MLP signal on the holdout (177 trades, mid-to-mid, half-spread cost per trade):
   gross PnL +45.0 ticks   net PnL -139.5 ticks
-note: the classifier finds real structure ... but paying half the spread on
-every trade erases it — naive microstructure signals die on transaction costs.
+note: on this split the MLP edges both baselines and gross PnL is positive,
+but across 100 seeds logistic beats the MLP by 0.59 pts (SE 0.16). The structure
+is generator mechanics (spread alone gives 0.693 of the 0.704), and paying half
+the spread on every trade erases the gross PnL. See research/results.md.
 
 demo complete.
 ```
@@ -176,11 +182,8 @@ statistical tests required by `API_SPEC.md` §10, and an edge-case suite that
 was added after an external review (tick-0 and 64-bit tick handling, CSV
 robustness, pure optimizer objectives, Poisson and single-event limits,
 small-λ KS accuracy, label validation, `ofi_at` boundary, depth monotonicity,
-and byte-identical regeneration of every bundled file from its seed). Final
-counts on this machine: **Python 101, C++ 90, Rust 94, Java 84**, all
-passing, with the four demos producing the output shown above. Wall-clock
-per suite on a 2-core container: Python ≈ 4.5 s, C++ ≈ 2.5 s, Rust ≈ 6 s
-(release), Java ≈ 5 s.
+and byte-identical regeneration of every bundled file from its seed). Current
+counts are in CI, which runs all four suites on every push.
 
 ## Cross-language golden testing
 
@@ -222,7 +225,9 @@ What a practitioner gets, precisely:
   with `mu`, `beta` per unit time and `alpha` per event; PnL is in ticks per
   unit size, mid-to-mid, half a spread charged on entry only.
 - **Parameter bounds.** Prices must round to `[1, 9e18]` ticks within a
-  `1e-9` relative grid tolerance (round half up); sizes `1..9e18`; seeds
+  relative grid tolerance of `1e-9`, capped at 0.01 tick (round half up;
+  `limit()` refuses ratios from `2^52`, use `limit_ticks`); sizes `1..9e18`,
+  with total resting size per side also capped at `9e18`; seeds
   `[0, 2^63−1]`; Hawkes `mu > 0`, `alpha ≥ 0`, `beta > 0`, simulation refuses
   branching `≥ 1`; `ofi_at(i, w)` needs `i ≥ w`; feature windows, lookback and
   horizon are counted in events, not clock time.
@@ -246,18 +251,38 @@ What a practitioner gets, precisely:
   pass `record_trades=False` / call `clear_history()` when replaying a full
   day.
 - **What is verified.** Every formula is pinned in `API_SPEC.md`, reproduced
-  by four independent implementations to the golden tolerances, and the
+  by four ports to the golden tolerances, and the
   reference mathematics (likelihood recursions, backprop, KS series) is
   cross-checked against brute force, finite differences and scipy in the test
-  suites. That makes it a trustworthy *reference and research* implementation;
-  it is not an exchange-grade matching engine or a trading system.
+  suites. The ports all come from one spec, so agreement shows port fidelity.
+  It is not independent proof that the spec is right. This is a reference and
+  teaching implementation, not an exchange-grade matching engine or a trading
+  system.
+
+## Limits
+
+- All data is synthetic. Nothing here is evidence about real markets; a
+  parameter recovered from the bundled data is one the generator put there.
+- No latency is measured, and no real feed, venue or order gateway is involved.
+- The zero-intelligence generator is inspired by Smith et al. (2003) but differs
+  from it (geometric placement off the opposite best, no event clock).
+- KS on fitted parameters is a weak test: 0/400 rejections at 5% under the true
+  model, and 3–5% against wrong kernels. Use the bootstrap in `lobmod.research`.
+- `microprice` is the size-weighted mid, not Stoikov's micro-price.
+- The single-split MLP lead is noise. Across 100 seeds logistic beats the MLP by
+  0.59 points (SE 0.16), and spread alone gives 0.693 of the 0.704.
+
+## Known results
+
+Multi-seed model comparison, bootstrap goodness of fit, the executable backtest
+and the maker simulator are in [research/results.md](research/results.md).
 
 ## References
 
 Works the code implements or the documentation relies on:
 
-- Smith, E., Farmer, J. D., Gillemot, L., Krishnamurthy, S. (2003). "Statistical theory of the continuous double auction." *Quantitative Finance* 3(6), 481–514. https://doi.org/10.1088/1469-7688/3/6/307 — zero-intelligence order-flow generator (`zi`).
-- Stoikov, S. (2018). "The micro-price: a high-frequency estimator of future prices." *Quantitative Finance* 18(12), 1959–1966. https://doi.org/10.1080/14697688.2018.1489139 — size-weighted mid (`microprice`).
+- Smith, E., Farmer, J. D., Gillemot, L., Krishnamurthy, S. (2003). "Statistical theory of the continuous double auction." *Quantitative Finance* 3(6), 481–514. https://doi.org/10.1088/1469-7688/3/6/307 — inspiration for the zero-intelligence generator (`zi`), which differs from their model.
+- Stoikov, S. (2018). "The micro-price: a high-frequency estimator of future prices." *Quantitative Finance* 18(12), 1959–1966. https://doi.org/10.1080/14697688.2018.1489139 — cited for contrast: Stoikov's micro-price is a limit of expected future mids; `microprice` here is the plain size-weighted mid.
 - Cont, R., Kukanov, A., Stoikov, S. (2014). "The price impact of order book events." *Journal of Financial Econometrics* 12(1), 47–88. https://doi.org/10.1093/jjfinec/nbt003 — order-flow imbalance, eq. (4) (`features.ofi_series`).
 - Hawkes, A. G. (1971). "Spectra of some self-exciting and mutually exciting point processes." *Biometrika* 58(1), 83–90. https://doi.org/10.1093/biomet/58.1.83 — the Hawkes process.
 - Ozaki, T. (1979). "Maximum likelihood estimation of Hawkes' self-exciting point processes." *Annals of the Institute of Statistical Mathematics* 31, 145–155. https://doi.org/10.1007/BF02480272 — the O(N) likelihood recursion.
@@ -272,7 +297,7 @@ Works the code implements or the documentation relies on:
 - Nelder, J. A., Mead, R. (1965). "A simplex method for function minimization." *The Computer Journal* 7(4), 308–313. https://doi.org/10.1093/comjnl/7.4.308.
 - Virtanen, P. et al. (2020). "SciPy 1.0: fundamental algorithms for scientific computing in Python." *Nature Methods* 17, 261–272. https://doi.org/10.1038/s41592-019-0686-2 — the initial-simplex and acceptance conventions of `scipy.optimize.minimize(method="Nelder-Mead")` that the optimizer pins.
 - Bishop, C. M. (2006). *Pattern Recognition and Machine Learning*, §5.3 (error backpropagation). Springer. ISBN 978-0-387-31073-2 — the MLP gradients (`nn`).
-- He, K., Zhang, X., Ren, S., Sun, J. (2015). "Delving deep into rectifiers: surpassing human-level performance on ImageNet classification." *Proceedings of the IEEE ICCV*, 1026–1034. https://doi.org/10.1109/ICCV.2015.123 (arXiv:1502.01852) — the √(2/n_in) scale of the pinned init.
+- He, K., Zhang, X., Ren, S., Sun, J. (2015). "Delving deep into rectifiers: surpassing human-level performance on ImageNet classification." *Proceedings of the IEEE ICCV*, 1026–1034. https://doi.org/10.1109/ICCV.2015.123 (arXiv:1502.01852) — source of the √(2/n_in) term; the pinned init is smaller than He (variance about 8x below).
 - Knuth, D. E. (1997). *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, 3rd ed., §3.3.4 (MMIX LCG constants). Addison-Wesley. ISBN 978-0-201-89684-8 — the pinned 64-bit LCG (`Lcg64`).
 
 ## License

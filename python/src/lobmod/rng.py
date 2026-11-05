@@ -26,6 +26,7 @@ _INV_2_53: float = 1.0 / (1 << 53)
 #: pinned seed domain: [0, MAX_SEED] (representable as a signed 64-bit
 #: integer in every port; never masked or wrapped)
 MAX_SEED: int = (1 << 63) - 1
+_TWO_63: float = 9223372036854775808.0
 
 
 class Lcg64:
@@ -75,12 +76,16 @@ class Lcg64:
         ``u = uniform()``.
 
         Raises:
-            ValueError: if ``p`` is not in ``(0, 1)``.
+            ValueError: if ``p`` is not in ``(0, 1)``, or the result does not
+                fit a signed 64-bit integer (quotient >= ``2^63``).
         """
         if not (0.0 < p < 1.0):
             raise ValueError(f"p must be in (0, 1), got {p}")
         u = self.uniform()
-        return int(math.floor(math.log1p(-u) / math.log1p(-p)))
+        x = math.log1p(-u) / math.log1p(-p)
+        if x >= _TWO_63:  # also catches x == inf
+            raise ValueError(f"geometric variate {x} for p={p} exceeds the 64-bit range")
+        return int(math.floor(x))
 
     def randint(self, n: int) -> int:
         """Uniform integer in ``{0, ..., n-1}`` as ``floor(uniform() * n)``.

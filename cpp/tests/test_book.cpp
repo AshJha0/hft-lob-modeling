@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "lobmod/book.hpp"
+#include "lobmod/neldermead.hpp"
 #include "lobmod/replay.hpp"
 #include "lobmod/rng.hpp"
 #include "lobmod/zi.hpp"
@@ -481,6 +482,80 @@ TEST(Rng, SeedDomainIsPinned) {
     EXPECT_NO_THROW(lobmod::Lcg64(INT64_MAX));
     EXPECT_THROW(lobmod::Lcg64(-1), std::invalid_argument);
     EXPECT_THROW(lobmod::Lcg64(INT64_MIN), std::invalid_argument);
+}
+
+// ---- 64-bit edge rules pinned in API_SPEC 2.1/2.3 --------------------------
+
+lobmod::LimitOrderBook quoted(std::int64_t bid, std::int64_t ask) {
+    lobmod::LimitOrderBook b;
+    b.limit_ticks('B', bid, 1, 1);
+    b.limit_ticks('S', ask, 1, 2);
+    return b;
+}
+
+TEST(Edge, MidIsExactSumRoundedOnce) {
+    EXPECT_EQ(quoted(5000000000000000000LL, 5000000000000000001LL).mid(), 5e18);
+    const std::int64_t p53 = 1LL << 53;
+    const std::int64_t p62 = 1LL << 62;
+    EXPECT_EQ(quoted(p53 + 1, p53 + 2).mid(), static_cast<double>(p53 + 2));
+    EXPECT_EQ(quoted(p62, p62 + 1025).mid(), static_cast<double>(p62 + 1024));
+}
+
+TEST(Edge, SideCapacityRejectedBeforeMutation) {
+    const std::int64_t m = lobmod::kMaxTicks;
+    lobmod::LimitOrderBook b;
+    b.limit_ticks('B', 100, m, 1);
+    EXPECT_THROW(b.limit_ticks('B', 100, m, 2), std::invalid_argument);
+    EXPECT_THROW(b.limit_ticks('B', 99, 1, 2), std::invalid_argument);
+    EXPECT_EQ(b.total_size('B'), m);
+    EXPECT_EQ(b.n_orders('B'), 1);
+    EXPECT_EQ(b.best_bid_size(), m);
+    EXPECT_EQ(b.depth('B', 5), m);
+    b.market('S', 1); // a fill frees capacity
+    b.limit_ticks('B', 99, 1, 2);
+    EXPECT_EQ(b.total_size('B'), m);
+    b.cancel(1); // so does a cancel
+    EXPECT_EQ(b.total_size('B'), 1);
+    b.limit_ticks('S', 200, m, 3);
+    EXPECT_THROW(b.limit_ticks('S', 200, 1, 4), std::invalid_argument);
+    EXPECT_EQ(b.total_size('S'), m);
+}
+
+TEST(Edge, GridToleranceIsCappedBelowHalfATick) {
+    lobmod::LimitOrderBook b(0.01);
+    EXPECT_THROW(b.limit('B', 5000000.004, 1, 1), std::invalid_argument);
+    b.limit('B', 5000000.01, 1, 1);
+    EXPECT_EQ(*b.best_bid(), 500000001);
+}
+
+TEST(Edge, GridValidationStopsAt2Pow52) {
+    lobmod::LimitOrderBook b(1.0);
+    EXPECT_THROW(b.limit('B', 4503599627370496.0, 1, 1), std::invalid_argument);
+    b.limit('B', 4503599627370495.0, 1, 1);
+    EXPECT_EQ(*b.best_bid(), 4503599627370495LL);
+}
+
+TEST(Edge, InfiniteRatioIsAnError) {
+    lobmod::LimitOrderBook b(1e-300);
+    EXPECT_THROW(b.limit('B', 1e308, 1, 1), std::invalid_argument);
+}
+
+TEST(Edge, GeometricOutOfRangeIsAnError) {
+    lobmod::Lcg64 c(1);
+    EXPECT_THROW(c.geometric(1e-300), std::invalid_argument);
+}
+
+TEST(Edge, Rosenbrock4dIterationCountIsPinned) {
+    const auto rosen = [](const std::vector<double>& x) {
+        double total = 0.0;
+        for (std::size_t i = 0; i + 1 < x.size(); ++i) {
+            const double a = x[i + 1] - x[i] * x[i];
+            const double c = 1.0 - x[i];
+            total += 100.0 * (a * a) + c * c;
+        }
+        return total;
+    };
+    EXPECT_EQ(lobmod::nelder_mead(rosen, {-1.2, 1.0, 0.7, 1.3}).n_iter, 308);
 }
 
 } // namespace

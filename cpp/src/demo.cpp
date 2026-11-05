@@ -85,7 +85,17 @@ int main() {
     const auto t_uni = lobmod::read_times_csv(kData + "/hawkes_uni.csv");
     const double t_horizon = 1000.0; // dgp_params.json: hawkes_uni.T
     const auto fit_u = lobmod::fit_uni(t_uni, t_horizon);
-    std::printf("%zu events on [0, %.0f]\n", t_uni.size(), t_horizon);
+    double gap_sum = 0.0, gap_sq = 0.0;
+    const std::size_t n_gaps = t_uni.size() - 1;
+    for (std::size_t i = 1; i < t_uni.size(); ++i) gap_sum += t_uni[i] - t_uni[i - 1];
+    const double gap_mean = gap_sum / static_cast<double>(n_gaps);
+    for (std::size_t i = 1; i < t_uni.size(); ++i) {
+        const double dev = t_uni[i] - t_uni[i - 1] - gap_mean;
+        gap_sq += dev * dev;
+    }
+    const double gap_cv = std::sqrt(gap_sq / static_cast<double>(n_gaps)) / gap_mean;
+    std::printf("%zu events on [0, %.0f]  (gap CV %.2f vs 1 for Poisson)\n",
+                t_uni.size(), t_horizon, gap_cv);
     std::printf("\n  param        true    fitted\n");
     std::printf("  mu          0.500  %8.4f\n", fit_u.mu);
     std::printf("  alpha       1.000  %8.4f\n", fit_u.alpha);
@@ -104,7 +114,7 @@ int main() {
     const auto [d_fit, p_fit] = lobmod::ks_test_exp(tau);
     std::printf("time-rescaled inter-arrivals should be iid Exp(1) under the model:\n");
     std::printf("  fitted params : KS stat %.4f, p-value %.4f -> %s\n", d_fit,
-                p_fit, p_fit > 0.05 ? "PASS (no rejection at 5%)" : "REJECT");
+                p_fit, p_fit > 0.05 ? "no rejection (test is weak with fitted parameters)" : "REJECT");
     const auto tau_wrong =
         lobmod::uni_residuals(t_uni, t_horizon, 1.5, 0.1, 3.0);
     const auto [d_w, p_w] = lobmod::ks_test_exp(tau_wrong);
@@ -135,15 +145,15 @@ int main() {
     std::printf("  spectral radius of branching matrix = %.4f (%s)\n",
                 fit_b.spectral_radius,
                 fit_b.spectral_radius < 1 ? "stationary" : "NON-STATIONARY");
-    std::printf("  interpretation: self-excitation (buy<-buy, sell<-sell) dominates\n"
-                "  the cross terms — order flow is strongly clustered by side\n"
-                "  (herding / order splitting), with weaker cross-side contagion.\n");
+    std::printf("  interpretation: self terms exceed cross terms because the simulation was\n"
+                "  parameterised that way; the fit recovers them. This checks the estimator\n"
+                "  and says nothing about real order flow.\n");
     const auto taus = lobmod::biv_residuals(t_biv, k_biv, t_biv_horizon, fit_b.mu,
                                             fit_b.alpha, fit_b.beta);
     for (int m = 0; m < 2; ++m) {
         const auto [dd, pp] = lobmod::ks_test_exp(taus[m]);
         std::printf("  KS residuals (%-4s): stat %.4f, p %.4f -> %s\n",
-                    m == 0 ? "buy" : "sell", dd, pp, pp > 0.05 ? "PASS" : "REJECT");
+                    m == 0 ? "buy" : "sell", dd, pp, pp > 0.05 ? "no rejection (test is weak with fitted parameters)" : "REJECT");
     }
 
     // ----------------------------------------------------- features + learning
@@ -210,9 +220,10 @@ int main() {
     std::printf("trading the MLP signal on the holdout (%d trades, mid-to-mid, "
                 "half-spread cost per trade):\n", n_trades);
     std::printf("  gross PnL %+.1f ticks   net PnL %+.1f ticks\n", gross, net_pnl);
-    std::printf("note: the classifier finds real structure (it beats both baselines\n"
-                "and gross PnL is positive), but paying half the spread on every\n"
-                "trade erases it — naive microstructure signals die on costs.\n");
+    std::printf("note: on this split the MLP edges both baselines and gross PnL is positive,\n"
+                "but across 100 seeds logistic beats the MLP by 0.59 pts (SE 0.16). The structure\n"
+                "is generator mechanics (spread alone gives 0.693 of the 0.704), and paying half\n"
+                "the spread on every trade erases the gross PnL. See research/results.md.\n");
 
     std::printf("\ndemo complete.\n");
     return 0;

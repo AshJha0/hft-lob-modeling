@@ -80,10 +80,11 @@ fn run() -> Result<(), LobError> {
     let t_horizon_uni = 1000.0;
     let fit_u = fit_uni(&t_uni, t_horizon_uni)?;
     let gaps: Vec<f64> = t_uni.windows(2).map(|w| w[1] - w[0]).collect();
-    let min_gap = gaps.iter().cloned().fold(f64::INFINITY, f64::min);
     let mean_gap = gaps.iter().sum::<f64>() / gaps.len() as f64;
+    let var_gap = gaps.iter().map(|g| (g - mean_gap).powi(2)).sum::<f64>() / gaps.len() as f64;
+    let gap_cv = var_gap.sqrt() / mean_gap;
     println!(
-        "{} events on [0, {t_horizon_uni:.0}]  (min gap {min_gap:.4} vs mean {mean_gap:.3} — self-exciting bursts)",
+        "{} events on [0, {t_horizon_uni:.0}]  (gap CV {gap_cv:.2} vs 1 for Poisson)",
         t_uni.len()
     );
     println!("\n  param        true    fitted");
@@ -111,7 +112,7 @@ fn run() -> Result<(), LobError> {
     println!("time-rescaled inter-arrivals should be iid Exp(1) under the model:");
     println!(
         "  fitted params : KS stat {d:.4}, p-value {p:.4} -> {}",
-        if p > 0.05 { "PASS (no rejection at 5%)" } else { "REJECT" }
+        if p > 0.05 { "no rejection (test is weak with fitted parameters)" } else { "REJECT" }
     );
     let tau_wrong = uni_residuals(&t_uni, t_horizon_uni, 1.5, 0.1, 3.0)?;
     let (dw, pw) = ks_test_exp(&tau_wrong)?;
@@ -144,15 +145,15 @@ fn run() -> Result<(), LobError> {
         fit_b.spectral_radius,
         if fit_b.spectral_radius < 1.0 { "stationary" } else { "NON-STATIONARY" }
     );
-    println!("  interpretation: self-excitation (buy<-buy, sell<-sell) dominates the");
-    println!("  cross terms — order flow is strongly clustered by side (herding /");
-    println!("  order splitting), with weaker but positive cross-side contagion.");
+    println!("  interpretation: self terms exceed cross terms because the simulation was");
+    println!("  parameterised that way; the fit recovers them. This checks the estimator");
+    println!("  and says nothing about real order flow.");
     let taus = biv_residuals(&t_biv, &k_biv, t_horizon_biv, &fit_b.mu, &fit_b.alpha, fit_b.beta)?;
     for (name, tt) in ["buy", "sell"].iter().zip(&taus) {
         let (dd, pp) = ks_test_exp(tt)?;
         println!(
             "  KS residuals ({name:4}): stat {dd:.4}, p {pp:.4} -> {}",
-            if pp > 0.05 { "PASS" } else { "REJECT" }
+            if pp > 0.05 { "no rejection (test is weak with fitted parameters)" } else { "REJECT" }
         );
     }
 
@@ -226,9 +227,10 @@ fn run() -> Result<(), LobError> {
         "trading the MLP signal on the holdout ({n_trades} trades, mid-to-mid, half-spread cost per trade):"
     );
     println!("  gross PnL {gross:+.1} ticks   net PnL {net_pnl:+.1} ticks");
-    println!("note: the classifier finds real structure (it beats both baselines and");
-    println!("gross PnL is positive), but paying half the spread on every trade");
-    println!("erases it — naive microstructure signals die on transaction costs.");
+    println!("note: on this split the MLP edges both baselines and gross PnL is positive,");
+    println!("but across 100 seeds logistic beats the MLP by 0.59 pts (SE 0.16). The structure");
+    println!("is generator mechanics (spread alone gives 0.693 of the 0.704), and paying half");
+    println!("the spread on every trade erases the gross PnL. See research/results.md.");
 
     println!("\ndemo complete.");
     Ok(())

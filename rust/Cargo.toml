@@ -12,3 +12,7 @@ serde_json = "1"
 # builds are far too slow for it, so tests/demo build with -O2 even in dev.
 [profile.dev]
 opt-level = 2
+
+# Same arithmetic behaviour as dev: a wrap panics rather than passing silently.
+[profile.release]
+overflow-checks = true

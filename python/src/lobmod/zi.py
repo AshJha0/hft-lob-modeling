@@ -1,6 +1,6 @@
 """Zero-intelligence order-flow generator (pinned, seeded).
 
-Smith-Farmer style flow: Poisson event-type rates around the best quotes with
+Flow loosely inspired by Smith et al. (2003), not their model: Poisson event-type rates around the best quotes with
 geometric placement of passive limit orders.  Everything is pinned — RNG
 (:class:`lobmod.rng.Lcg64`), draw order, placement and size formulas — so that
 every language regenerates the identical 5000-event stream.
@@ -95,7 +95,9 @@ def generate_events(n_events: int, seed: int) -> List[Event]:
             _RATE_MARKET,                       # market buy
             _RATE_MARKET,                       # market sell
         ]
-        total = sum(rates)
+        total = 0.0  # explicit left-to-right: builtin sum() is compensated on 3.12+
+        for rate in rates:
+            total += rate
         x = rng.uniform() * total
         kind = 0
         acc = rates[0]

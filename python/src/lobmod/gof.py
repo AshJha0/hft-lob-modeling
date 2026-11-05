@@ -2,7 +2,10 @@ r"""Goodness of fit: Kolmogorov-Smirnov test of Exp(1) residuals.
 
 By the time-rescaling theorem (see :mod:`lobmod.hawkes`), a correctly
 specified Hawkes model turns its inter-arrival compensator increments into
-iid Exp(1) draws.  This module tests that natively:
+iid Exp(1) draws.  The p-value below assumes the parameters were fixed in
+advance; with parameters fitted to the same data it is far too large and the
+test has little power (see LEARN section 3.7 and the bootstrap test in
+:mod:`lobmod.research`).  This module tests that natively:
 
 * KS statistic against the Exp(1) CDF ``F(x) = 1 - exp(-x)``:
 

@@ -454,3 +454,80 @@ fn events_csv_round_trip_is_byte_identical() {
     let bundled = std::fs::read(common::data_path("lob_events.csv")).unwrap();
     assert_eq!(written, bundled);
 }
+
+// ---- 64-bit edge rules pinned in API_SPEC 2.1/2.3 --------------------------
+
+fn quoted(bid: i64, ask: i64) -> LimitOrderBook {
+    let mut b = LimitOrderBook::new(1.0).unwrap();
+    b.limit_ticks(Side::Bid, bid, 1, 1).unwrap();
+    b.limit_ticks(Side::Ask, ask, 1, 2).unwrap();
+    b
+}
+
+#[test]
+fn mid_is_exact_sum_rounded_once() {
+    assert_eq!(quoted(5_000_000_000_000_000_000, 5_000_000_000_000_000_001).mid(), 5e18);
+    assert_eq!(quoted((1 << 53) + 1, (1 << 53) + 2).mid(), ((1i64 << 53) + 2) as f64);
+    assert_eq!(quoted(1 << 62, (1 << 62) + 1025).mid(), ((1i64 << 62) + 1024) as f64);
+}
+
+#[test]
+fn side_capacity_rejected_before_mutation() {
+    let mut b = LimitOrderBook::new(1.0).unwrap();
+    b.limit_ticks(Side::Bid, 100, MAX_TICKS, 1).unwrap();
+    assert!(b.limit_ticks(Side::Bid, 100, MAX_TICKS, 2).is_err());
+    assert!(b.limit_ticks(Side::Bid, 99, 1, 2).is_err());
+    assert_eq!(b.total_size(Side::Bid), MAX_TICKS);
+    assert_eq!(b.n_orders(Side::Bid), 1);
+    assert_eq!(b.best_bid_size(), MAX_TICKS);
+    assert_eq!(b.depth(Side::Bid, 5).unwrap(), MAX_TICKS);
+    b.market(Side::Ask, 1).unwrap(); // a fill frees capacity
+    b.limit_ticks(Side::Bid, 99, 1, 2).unwrap();
+    assert_eq!(b.total_size(Side::Bid), MAX_TICKS);
+    b.cancel(1).unwrap(); // so does a cancel
+    assert_eq!(b.total_size(Side::Bid), 1);
+    b.limit_ticks(Side::Ask, 200, MAX_TICKS, 3).unwrap();
+    assert!(b.limit_ticks(Side::Ask, 200, 1, 4).is_err());
+    assert_eq!(b.total_size(Side::Ask), MAX_TICKS);
+}
+
+#[test]
+fn grid_tolerance_is_capped_below_half_a_tick() {
+    let mut b = LimitOrderBook::new(0.01).unwrap();
+    assert!(b.limit(Side::Bid, 5000000.004, 1, 1).is_err());
+    b.limit(Side::Bid, 5000000.01, 1, 1).unwrap();
+    assert_eq!(b.best_bid(), Some(500000001));
+}
+
+#[test]
+fn grid_validation_stops_at_2_pow_52() {
+    let mut b = LimitOrderBook::new(1.0).unwrap();
+    assert!(b.limit(Side::Bid, 4503599627370496.0, 1, 1).is_err());
+    b.limit(Side::Bid, 4503599627370495.0, 1, 1).unwrap();
+    assert_eq!(b.best_bid(), Some(4503599627370495));
+}
+
+#[test]
+fn infinite_ratio_is_an_error() {
+    let mut b = LimitOrderBook::new(1e-300).unwrap();
+    assert!(b.limit(Side::Bid, 1e308, 1, 1).is_err());
+}
+
+#[test]
+fn geometric_out_of_range_is_an_error() {
+    assert!(Lcg64::new(1).unwrap().geometric(1e-300).is_err());
+}
+
+#[test]
+fn rosenbrock_4d_iteration_count_is_pinned() {
+    let rosen = |x: &[f64]| {
+        let mut total = 0.0;
+        for i in 0..x.len() - 1 {
+            let (a, c) = (x[i + 1] - x[i] * x[i], 1.0 - x[i]);
+            total += 100.0 * (a * a) + c * c;
+        }
+        total
+    };
+    let r = lobmod::nelder_mead_default(rosen, &[-1.2, 1.0, 0.7, 1.3]).unwrap();
+    assert_eq!(r.n_iter, 308);
+}

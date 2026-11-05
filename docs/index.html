@@ -38,6 +38,7 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
 <header>
   <div class="wrap">
     <h1>hft-lob-modeling</h1>
+    <p><strong>A synthetic research and teaching lab: no real market data, no latency measurement, not a trading system.</strong> Every number on this page describes simulated data. Limits and further results are in the README and in research/results.md.</p>
     <p>A four-language (Python / C++ / Rust / Java) cross-verified laboratory for high-frequency market microstructure: a price-time-priority limit order book with deterministic replay, a pinned zero-intelligence order-flow generator, univariate and bivariate Hawkes processes with exact O(N) likelihoods, Ogata thinning and time-rescaling goodness of fit, and an OFI / queue-imbalance feature pipeline feeding a neural network built from scratch with no frameworks and no RNG. Every numerical path is pinned by API_SPEC.md and held to 18 golden cases in all four languages — closed out by an honest accounting of whether the predicted signal survives transaction costs (it does not: gross +45.0 ticks, net −139.5).</p>
     <nav>
       <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LEARN.md">Learn (guide)</a>
@@ -52,9 +53,10 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
 </header>
 
 <div class="wrap">
-  <h2>Measured, not claimed</h2>
+  <h2>Checked in CI</h2>
+  <p>Each row below is enforced by the test suites that CI runs on every push. Agreement between ports shows they follow one spec; it does not prove the spec is right.</p>
   <div class="numbers"><table>
-    <tr><td>Cross-language parity</td><td>python 101 · cpp 90 · rust 94 · java 84 tests — 369 passing, plus four demos producing the same report; suites run in ≈ 4.5 s / 2.5 s / 6 s / 5 s on a 2-core container</td></tr>
+    <tr><td>Cross-language parity</td><td>Four test suites plus four demos producing the same report; current counts: see CI</td></tr>
     <tr><td>Golden suite</td><td>18 named cases in data/golden/golden.json spanning every component: book snapshots after events 1000/3000/5000, microprice (1e-12), OFI (1e-10), Hawkes log-likelihoods (1e-8), fits, KS statistic and p-value (1e-6), NN losses at epoch 1 and 800 (1e-8), holdout accuracies (1e-10), signal PnL after costs (1e-8)</td></tr>
     <tr><td>Determinism</td><td>one pinned 64-bit Knuth/MMIX LCG for the whole project — never a language's built-in RNG; pinned draw order, exact Nelder-Mead recipe, sin-based weight init, full-batch gradient descent with no shuffling; every bundled CSV regenerates byte-for-byte from its seed</td></tr>
     <tr><td>Independent recomputation</td><td>O(N) likelihood recursions vs brute-force O(N²) sums to 1e-10 (uni and biv); backprop vs central finite differences to rel. 1e-6 — generate_data.py refuses to write goldens unless both hold</td></tr>
@@ -71,21 +73,21 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
     <div class="card"><h3>Limit order book</h3>
       <p>Price-time-priority matching with partial fills, market orders walking the book, crossed limits that stop at their own price, unknown-cancel and duplicate-id rejection. Prices are integer ticks (<code>tick_size</code> converts once at the API boundary); mid and microprice are the only doubles, with an explicit NaN guard when a side is empty (61 such events in the bundled stream).</p></div>
     <div class="card"><h3>Replay, ZI flow and CSV</h3>
-      <p>Deterministic event replay with golden book snapshots; the Smith–Farmer–Gillemot–Krishnamurthy zero-intelligence generator with a pinned <code>u1, u2[, u3]</code> draw order; and strict readers/writers for the three CSV schemas (exact header, CRLF tolerated, only trailing blank lines, 64-bit integer grammar) so a hand-edited file fails loudly in every language.</p></div>
+      <p>Deterministic event replay with golden book snapshots; a zero-intelligence generator inspired by Smith, Farmer, Gillemot &amp; Krishnamurthy but not the same model (geometric placement off the opposite best, no event clock), with a pinned <code>u1, u2[, u3]</code> draw order; and strict readers/writers for the three CSV schemas (exact header, CRLF tolerated, only trailing blank lines, 64-bit integer grammar) so a hand-edited file fails loudly in every language.</p></div>
     <div class="card"><h3>Hawkes processes</h3>
       <p>Univariate and bivariate mutually exciting processes with an exponential kernel: Ozaki's O(N) likelihood recursion shipped next to its brute-force twin, Ogata thinning simulation (two uniforms per candidate), and MLE by a native Nelder–Mead on log-parameters that pins scipy's initial-simplex and acceptance conventions. Branching ratio and 2×2 spectral radius diagnostics warn at ≥ 0.9 and ≥ 1 rather than throwing.</p></div>
     <div class="card"><h3>Goodness of fit</h3>
-      <p>Time-rescaling residuals (Brown et al. 2002; Meyer 1971 for the bivariate case) tested against Exp(1) with an exact KS statistic, Stephens' small-sample correction and two Kolmogorov series switched at λ &lt; 0.1. On the bundled data the fitted parameters pass (KS 0.0172, p = 0.86) and deliberately wrong ones reject (p = 2e-14).</p></div>
+      <p>Time-rescaling residuals (Brown et al. 2002; Meyer 1971 for the bivariate case) tested against Exp(1) with an exact KS statistic, Stephens' small-sample correction and two Kolmogorov series switched at λ &lt; 0.1. On the bundled data the fitted parameters are not rejected (KS 0.0172, p = 0.86), but that is weak evidence: with fitted parameters the test rejected 0/400 true models at 5% and only 3–5% of wrong kernels. A refitting bootstrap is in <code>lobmod.research</code>.</p></div>
     <div class="card"><h3>Feature pipeline</h3>
       <p>Cont–Kukanov–Stoikov order-flow imbalance (their eq. 4), queue imbalance and microprice features over event-counted windows, with 3-class direction labels at a horizon H; <code>ofi_at(i, w)</code> requires <code>i ≥ w</code> and labels outside {0, 1, 2} are rejected. Windows, lookback and horizon are counted in events, never clock time.</p></div>
     <div class="card"><h3>Neural network from scratch</h3>
-      <p>A (16, 8) ReLU MLP with softmax head, logistic-regression and majority baselines, Bishop §5.3 backprop, He-scaled deterministic sin-based init, population-variance standardisation with a <code>std &lt; 1e-12 → 1</code> floor, max-shifted softmax with a 1e-300 log floor, and pinned tie-breaks (argmax → lowest index). Training loss 1.0806 → 0.6760 over 800 full-batch epochs, reproduced to 1e-8 in four languages.</p></div>
+      <p>A (16, 8) ReLU MLP with softmax head, logistic-regression and majority baselines, Bishop §5.3 backprop, a deterministic sin-based init smaller than He (variance about 8x below), population-variance standardisation with a <code>std &lt; 1e-12 → 1</code> floor, max-shifted softmax with a 1e-300 log floor, and pinned tie-breaks (argmax → lowest index). Training loss 1.0806 → 0.6760 over 800 full-batch epochs, reproduced to 1e-8 in four languages.</p></div>
     <div class="card"><h3>Signal PnL</h3>
-      <p>Trades the predicted direction on the chronological holdout mid-to-mid, charging half a spread on entry only — PnL in ticks per unit size. The bundled result is the point of the project: the classifier finds real structure and costs erase it.</p></div>
+      <p>Trades the predicted direction on the chronological holdout mid-to-mid, charging half a spread on entry only — PnL in ticks per unit size. On this split the MLP edges its baselines and costs erase the gross PnL. Across 100 seeds logistic beats the MLP by 0.59 points (SE 0.16); what the models pick up is generator mechanics, and spread alone gives 0.693 of the 0.704.</p></div>
     <div class="card"><h3>Testing approach</h3>
       <p>Three layers per language: the 18 goldens, the invariant and statistical tests API_SPEC §10 requires (KS at true parameters fails to reject, near-critical DGP fits with a warning, tiny-n KS), and the post-review edge-case suite (tick-0 and 6·10¹² / 10³⁰⁰-tick prices, CSV robustness, <code>maxiter = 1</code> reporting <code>converged = false</code>, Poisson and single-event limits, degenerate one-class labels). Tolerances are graduated: 1e-12 where arithmetic is exact, 1e-8 for pinned float pipelines, 1e-4 / 1e-3 for optimizer outputs.</p></div>
     <div class="card"><h3>Reference papers</h3>
-      <p>Smith, Farmer, Gillemot &amp; Krishnamurthy (2003) for the ZI generator; Stoikov (2018) microprice; Cont, Kukanov &amp; Stoikov (2014) OFI; Hawkes (1971), Ozaki (1979), Ogata (1978, 1981), Bacry, Mastromatteo &amp; Muzy (2015); Brown et al. (2002), Meyer (1971), Stephens (1970), Numerical Recipes §14.3.3; Nelder &amp; Mead (1965), Lagarias et al. (1998), SciPy 1.0; Bishop (2006), He et al. (2015); Knuth TAOCP Vol. 2 §3.3.4 for the LCG.</p></div>
+      <p>Smith, Farmer, Gillemot &amp; Krishnamurthy (2003) as inspiration for the ZI generator; Stoikov (2018) for contrast, since his micro-price is a limit of expected future mids and <code>microprice</code> here is the size-weighted mid; Cont, Kukanov &amp; Stoikov (2014) OFI; Hawkes (1971), Ozaki (1979), Ogata (1978, 1981), Bacry, Mastromatteo &amp; Muzy (2015); Brown et al. (2002), Meyer (1971), Stephens (1970), Numerical Recipes §14.3.3; Nelder &amp; Mead (1965), Lagarias et al. (1998), SciPy 1.0; Bishop (2006), He et al. (2015); Knuth TAOCP Vol. 2 §3.3.4 for the LCG.</p></div>
     <div class="card"><h3>Units and what is out of scope</h3>
       <p>Hawkes times and <code>T</code> share one arbitrary unit (seconds in the bundled data) with <code>mu</code>, <code>beta</code> per unit time and <code>alpha</code> per event. Not covered: timestamps and clock-time windows, calendars and sessions, reduce/replace/iceberg/auction/halt messages, fees, latency, fill probability, queue-position tracking, standard errors or Hessians for the MLE, duplicate-timestamp tie-breaking, multi-venue books. A reference and research implementation, not a matching engine or trading system.</p></div>
   </div>
@@ -117,7 +119,7 @@ cd hft-lob-modeling
 cd python
 pip install -r requirements.txt          # numpy, scipy, pytest
 PYTHONPATH=src python3 demo.py           # end-to-end demo
-PYTHONPATH=src python3 -m pytest -q      # 101 tests incl. the golden suite
+PYTHONPATH=src python3 -m pytest -q      # incl. the golden suite
 cd ..
 
 # C++ (C++17, CMake &gt;= 3.16, g++ 13, GoogleTest)
@@ -137,7 +139,7 @@ cd ..
 cd java
 bash build.sh    # javac -Xlint:all -Werror into out/
 bash demo.sh
-bash test.sh     # 84 tests</pre>
+bash test.sh</pre>
 
   <footer>hft-lob-modeling is MIT-licensed — a reference and research implementation, not a trading system; see the <a href="https://github.com/AshJha0/hft-lob-modeling#readme">README</a> and <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LICENSE">LICENSE</a> on GitHub.</footer>
 </div>
