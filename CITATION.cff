@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "hft-lob-modeling"
+abstract: "Limit order book simulator, Hawkes processes and order-flow models, implemented to one contract in Python, Rust, C++ and Java."
+type: software
+authors:
+  - family-names: Jha
+    given-names: Ashish
+version: 1.3.0
+license: MIT
+repository-code: "https://github.com/AshJha0/hft-lob-modeling"

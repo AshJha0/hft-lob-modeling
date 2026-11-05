@@ -182,14 +182,20 @@ impl IdMap {
         None
     }
 
-    /// The id must be absent.
+    /// The slot holding `id`, or the empty slot that ends its probe run.  One
+    /// walk then serves both the duplicate check and the insert.
     #[inline]
-    fn insert(&mut self, id: i64, handle: u32) {
+    fn probe(&self, id: i64) -> usize {
         let mut i = self.home(id);
-        while self.slots[i].1 != 0 {
+        while self.slots[i].1 != 0 && self.slots[i].0 != id {
             i = (i + 1) & self.mask;
         }
-        self.slots[i] = (id, handle + 1);
+        i
+    }
+
+    #[inline]
+    fn occupied(&self, at: usize) -> bool {
+        self.slots[at].1 != 0
     }
 
     /// Backward-shift deletion: pull later entries of the probe run into the
@@ -342,7 +348,8 @@ impl FastBook {
         if price < self.min_price || price - self.min_price >= self.n_levels {
             return Err(FastError::OutOfBand);
         }
-        if self.ids.find(id).is_some() {
+        let at = self.ids.probe(id);
+        if self.ids.occupied(at) {
             return Err(FastError::DuplicateId);
         }
         if size > MAX_TICKS - self.sides[slot(side)].total {
@@ -351,11 +358,110 @@ impl FastBook {
         if self.free == NIL {
             return Err(FastError::PoolFull);
         }
+        let level = (price - self.min_price) as u32;
+        if !self.crosses(side, price) {
+            // No matching, so the map and the probed slot stay as they were.
+            self.rest_order(side, level, size, id, at);
+            return Ok(size);
+        }
         let rest = self.execute(side, size, Some(price), sink);
         if rest > 0 {
-            self.rest_order(side, (price - self.min_price) as u32, rest, id);
+            let at = self.ids.probe(id);
+            self.rest_order(side, level, rest, id, at);
         }
         Ok(rest)
+    }
+
+    /// Add an order without matching, for mirroring a feed: the venue has
+    /// already decided what rests, and a feed book can be locked or crossed
+    /// before the open.  Returns the rested size.
+    ///
+    /// # Errors
+    /// The same refusals as [`FastBook::limit`].
+    #[inline]
+    pub fn rest(&mut self, side: Side, price: i64, size: i64, id: i64) -> Result<i64, FastError> {
+        if size <= 0 || size > MAX_TICKS {
+            return Err(FastError::BadSize);
+        }
+        if !(1..=MAX_TICKS).contains(&price) {
+            return Err(FastError::BadPrice);
+        }
+        if price < self.min_price || price - self.min_price >= self.n_levels {
+            return Err(FastError::OutOfBand);
+        }
+        let at = self.ids.probe(id);
+        if self.ids.occupied(at) {
+            return Err(FastError::DuplicateId);
+        }
+        if size > MAX_TICKS - self.sides[slot(side)].total {
+            return Err(FastError::SideOverflow);
+        }
+        if self.free == NIL {
+            return Err(FastError::PoolFull);
+        }
+        self.rest_order(side, (price - self.min_price) as u32, size, id, at);
+        Ok(size)
+    }
+
+    /// Move a resting order to a new id, price and size on the same side; it
+    /// loses its queue place.  `new_id` may equal `id`.  Returns the rested
+    /// size.
+    ///
+    /// # Errors
+    /// The refusals of [`FastBook::rest`] and [`FastError::UnknownId`]; any
+    /// refusal changes nothing.
+    #[inline]
+    pub fn replace(
+        &mut self,
+        id: i64,
+        new_id: i64,
+        price: i64,
+        size: i64,
+    ) -> Result<i64, FastError> {
+        let at = self.ids.find(id).ok_or(FastError::UnknownId)?;
+        if size <= 0 || size > MAX_TICKS {
+            return Err(FastError::BadSize);
+        }
+        if !(1..=MAX_TICKS).contains(&price) {
+            return Err(FastError::BadPrice);
+        }
+        if price < self.min_price || price - self.min_price >= self.n_levels {
+            return Err(FastError::OutOfBand);
+        }
+        if new_id != id && self.ids.find(new_id).is_some() {
+            return Err(FastError::DuplicateId);
+        }
+        let n = self.nodes[(self.ids.slots[at].1 - 1) as usize];
+        if size > MAX_TICKS - (self.sides[slot(n.side)].total - n.size) {
+            return Err(FastError::SideOverflow);
+        }
+        self.cancel(id)?;
+        self.rest(n.side, price, size, new_id)
+    }
+
+    /// Take `by` off a resting order, keeping its queue place; reducing to
+    /// zero removes it.  Returns the size left.
+    ///
+    /// # Errors
+    /// [`FastError::UnknownId`], or [`FastError::BadSize`] if `by` is not in
+    /// `1..=resting size`; the order is then unchanged.
+    #[inline]
+    pub fn reduce(&mut self, id: i64, by: i64) -> Result<i64, FastError> {
+        let at = self.ids.find(id).ok_or(FastError::UnknownId)?;
+        let h = (self.ids.slots[at].1 - 1) as usize;
+        let n = self.nodes[h];
+        if by <= 0 || by > n.size {
+            return Err(FastError::BadSize);
+        }
+        if by == n.size {
+            self.cancel(id)?;
+            return Ok(0);
+        }
+        self.nodes[h].size -= by;
+        let s = &mut self.sides[slot(n.side)];
+        s.levels[n.level as usize].total -= by;
+        s.total -= by;
+        Ok(n.size - by)
     }
 
     /// Submit a market order.  Returns the unfilled size.
@@ -501,7 +607,24 @@ impl FastBook {
     }
 
     #[inline]
-    fn rest_order(&mut self, side: Side, level: u32, size: i64, id: i64) {
+    fn crosses(&self, side: Side, price: i64) -> bool {
+        let (opp, buy) = match side {
+            Side::Bid => (&self.sides[1], true),
+            Side::Ask => (&self.sides[0], false),
+        };
+        if opp.best < 0 {
+            return false;
+        }
+        let touch = self.min_price + opp.best;
+        if buy {
+            touch <= price
+        } else {
+            touch >= price
+        }
+    }
+
+    #[inline]
+    fn rest_order(&mut self, side: Side, level: u32, size: i64, id: i64, at: usize) {
         let h = self.free;
         self.free = self.nodes[h as usize].next;
         let s = &mut self.sides[slot(side)];
@@ -533,7 +656,7 @@ impl FastBook {
         }
         s.total += size;
         s.orders += 1;
-        self.ids.insert(id, h);
+        self.ids.slots[at] = (id, h + 1);
     }
 
     #[inline]

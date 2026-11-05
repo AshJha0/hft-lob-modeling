@@ -31,5 +31,12 @@ add_executable(fast_book_tests ../tests/test_fast_book.cpp)
 target_link_libraries(fast_book_tests PRIVATE lobmod_fast)
 add_test(NAME fast_book_tests COMMAND fast_book_tests)
 
+add_executable(itch_tests test_itch.cpp)
+target_link_libraries(itch_tests PRIVATE lobmod_fast)
+add_test(NAME itch_tests COMMAND itch_tests)
+
 add_executable(fast_book_bench bench.cpp)
 target_link_libraries(fast_book_bench PRIVATE lobmod_fast)
+
+add_executable(itch_bench itch_bench.cpp)
+target_link_libraries(itch_bench PRIVATE lobmod_fast)

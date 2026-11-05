@@ -1,7 +1,8 @@
 # COOKBOOK — `lobmod` recipes
 
 Task-oriented recipes. Recipes 1-13 cover all four languages. Recipes 14-19
-are Python only because those layers are, and recipe 20 is C++ and Rust. The
+and 21-22 are Python only because those layers are, recipe 20 is C++ and Rust,
+and recipes 23-25 are commands and notes. The
 snippets are extracted and executed as part of the review checklist, and
 "Verifying the snippets" at the end says what was run and how. Paths assume the
 bundled `../data/` files relative to the language directory.
@@ -9,7 +10,7 @@ bundled `../data/` files relative to the language directory.
 Conventions, so the snippets stay short:
 
 - **Python** — run from `python/`: `PYTHONPATH=src python3 snippet.py`. Each
-  snippet is complete.
+  snippet is complete. Paths under `/tmp` need any writable folder on Windows.
 - **C++** — each block is the body of `int main()` with this prelude, built
   from `cpp/` after `bash build.sh` with
   `g++ -std=c++17 -I include snippet.cpp build/liblobmod.a`:
@@ -353,7 +354,7 @@ from lobmod import fit_uni, read_times_csv
 t = read_times_csv("../data/hawkes_uni.csv")
 fit = fit_uni(t, T=1000.0)
 print(fit.mu, fit.alpha, fit.beta)   # 0.5052 0.9795 1.6792 (golden, 1e-4)
-print(fit.branching)                 # 0.5833235621941935 (golden, 1e-6)
+print(fit.branching)                 # 0.58332356 (golden, 1e-6)
 print(fit.loglik, fit.converged, fit.n_iter)
 capped = fit_uni(t, T=1000.0, maxiter=1)
 print(capped.converged)              # False — honest: the cap stopped it
@@ -469,7 +470,7 @@ std::vector<double> t = lobmod::read_times_csv("../data/hawkes_uni.csv");
 lobmod::HawkesUniFit fit = lobmod::fit_uni(t, 1000.0);
 auto tau = lobmod::uni_residuals(t, 1000.0, fit.mu, fit.alpha, fit.beta);
 auto [d, p] = lobmod::ks_test_exp(tau);
-std::cout << d << " " << p << "\n";  // 0.0172 0.8632
+std::cout << d << " " << p << "\n";  // 0.0172047 0.863178
 ```
 
 **Rust**
@@ -479,7 +480,7 @@ let t = lobmod::read_times_csv("../data/hawkes_uni.csv")?;
 let fit = lobmod::fit_uni(&t, 1000.0)?;
 let tau = lobmod::uni_residuals(&t, 1000.0, fit.mu, fit.alpha, fit.beta)?;
 let (d, p) = lobmod::ks_test_exp(&tau)?;
-println!("{d:.6} {p:.6}");           // 0.017205 0.863177
+println!("{d:.6} {p:.6}");           // 0.017205 0.863178
 ```
 
 **Java**
@@ -489,7 +490,7 @@ double[] t = Hawkes.readTimesCsv(Path.of("../data/hawkes_uni.csv"));
 Hawkes.UniFit fit = Hawkes.fitUni(t, 1000.0);
 double[] tau = Hawkes.uniResiduals(t, 1000.0, fit.mu(), fit.alpha(), fit.beta());
 Gof.KsResult ks = Gof.ksTestExp(tau);
-System.out.printf("%.6f %.6f%n", ks.stat(), ks.pValue());   // 0.017205 0.863177
+System.out.printf("%.6f %.6f%n", ks.stat(), ks.pValue());   // 0.017205 0.863178
 ```
 
 ---
@@ -504,7 +505,7 @@ from lobmod import fit_biv, read_marked_times_csv, spectral_radius_2x2
 t, k = read_marked_times_csv("../data/hawkes_biv.csv")   # k: 0 = buy, 1 = sell
 fit = fit_biv(t, k, T=600.0)
 print(fit.alpha)          # [[0.727 0.303] [0.295 0.585]] (golden, 1e-3)
-print(fit.spectral_radius)  # 0.45678479107028125 (golden, 1e-6): stationary
+print(fit.spectral_radius)  # 0.4567848 (golden, 1e-6): stationary
 print(spectral_radius_2x2(fit.branching) == fit.spectral_radius)   # True
 # alpha[0,1] answers: how strongly does a SELL excite future BUYS?
 # self > cross here because the simulation was set up that way; not evidence about markets.
@@ -649,7 +650,7 @@ std::cout.precision(10);
 std::cout << hist.front() << " " << hist.back() << "\n";   // 1.080639031 0.67600142
 std::cout << lobmod::accuracy(y_te, net.predict(x_te)) << " "
           << lobmod::accuracy(y_te, logistic.predict(x_te)) << " "
-          << lobmod::accuracy(y_te, maj) << "\n";          // 0.7042 0.6996 0.6582
+          << lobmod::accuracy(y_te, maj) << "\n";          // 0.7042145594 0.6996168582 0.6582375479
 ```
 
 **Rust**
@@ -881,8 +882,9 @@ System.out.println(events.size() + " " + st.bestBid()[events.size() - 1]); // 17
 
 ## 14. How do I run the ITCH 5.0 parser on a small byte fixture?
 
-The parser is Python only and has been tested on hand-built fixtures. This
-recipe builds one in memory: a directory message, two adds, a partial cancel,
+The parser is Python only. It has been tested on hand-built fixtures and
+replayed on real sample files (recipe 24 replays a file of your own). This
+recipe builds a fixture in memory: a directory message, two adds, a partial cancel,
 an execution and a replace. Prices have four implied decimals, so 1,000,000
 is 100.0000 and the raw value is the tick count. Events that refer to a resting
 order by id carry price 0.
@@ -1121,19 +1123,158 @@ println!("{}", refused == Err(FastError::OutOfBand));    // true
 println!("{}", book.cancel(1).unwrap());                 // 5
 ```
 
-There is no FastBook in Python or Java. Timings are in `docs/LATENCY.md`.
+To mirror a feed rather than match, use `rest`, `reduce` and `replace`, as `apply`
+in `cpp/fast/itch_decode.hpp` and `rust/src/itch_decode.rs` does. There is no
+FastBook in Python or Java. Timings are in `docs/LATENCY.md`.
+
+## 21. How do I tune the simulator?
+
+`FlowParams` is a frozen dataclass, so change a copy with `dataclasses.replace`.
+Change one thing at a time and keep the seed, because the seed fixes the flow up
+to the point where your agent starts to change it.
+
+| To change | Parameter |
+|---|---|
+| how much flow is informed | `p_informed`, `informed_per_jump`, `informed_margin` |
+| how far and how often fair value moves | `jump_rate`, `jump_sd` |
+| book depth and spread | `limit_rate`, `queue_scale`, `cancel_rate`, `p_geometric` |
+| clustering of market orders | `mu`, `alpha`, `beta` |
+| how quickly the background catches up | `anchor_tau`, `refresh_rate` |
+
+**Python**
+
+```python
+from dataclasses import replace
+
+from lobmod.sim import AgentSpec, FlowParams, NaiveTouch, Simulator, attribute
+
+base = FlowParams()
+for name, flow in (("default", base),
+                   ("no informed", replace(base, p_informed=0.0)),
+                   ("thin book", replace(base, limit_rate=3.0))):
+    agent = AgentSpec("naive", NaiveTouch(cap=5), md_latency=0.01, oe_latency=0.01)
+    res = Simulator(flow, [agent], T=120.0, seed=1).run()
+    a = attribute(res, "naive", horizon=1.0)
+    print(name, res.n_events, a.spread, a.adverse, a.inventory, a.total)
+# default 6969 82.5 -28.5 15.0 69.0
+# no informed 6711 68.0 15.0 -4.0 79.0
+# thin book 5698 76.0 -11.0 42.5 107.5
+```
+
+With no informed flow the adverse term changes sign, which is the mechanism
+working. One seed of 120 seconds proves nothing else: use many paired seeds, as
+`research/run_sim.py` does. Tuning until a statistic looks right is not
+calibration. An attempt at that, against criteria fixed in advance, failed.
+
+## 22. How do I add a strategy to `lobmod.sim`?
+
+A strategy is any object with `decide(view)` returning a `Quote`. The `view` holds
+the delayed `bid`, `ask`, `bid_size`, `ask_size`, `signal` and `inventory`. The
+engine works out the cancels and new orders needed to reach the quote you ask for.
+Orders are post-only: a quote that would cross when it lands is rejected. This
+strategy joins the touch but steps back one tick on the side that adds to its
+position.
+
+**Python**
+
+```python
+from dataclasses import dataclass
+
+from lobmod.sim import AgentSpec, FlowParams, Quote, Simulator, attribute
+
+@dataclass(frozen=True)
+class SkewedTouch:
+    cap: int = 5
+
+    def decide(self, view):
+        if view.bid is None or view.ask is None:
+            return Quote()
+        bid, ask = view.bid, view.ask
+        if view.inventory > 0:
+            bid -= 1
+        if view.inventory < 0:
+            ask += 1
+        if view.inventory >= self.cap:
+            bid = None
+        if view.inventory <= -self.cap:
+            ask = None
+        return Quote(bid, ask)
+
+agent = AgentSpec("skew", SkewedTouch(), md_latency=0.01, oe_latency=0.01, sees_signal=False)
+res = Simulator(FlowParams(), [agent], T=120.0, seed=1).run()
+a = attribute(res, "skew", horizon=1.0)
+print(a.spread, a.adverse, a.inventory, a.total, a.lots)   # 77.5 -26.5 -3.5 47.5 85
+print(res.agents["skew"].late_cancels >= 0)                # True: see also rejects, queue_log
+```
+
+Set `sees_signal=False` unless you mean to test the free fair-value feed, since
+that feed drives the latency results (`research/results_sim.md`).
+
+## 23. How do I run the benchmarks and fuzzers?
+
+```bash
+bash bench/run_all.sh results.txt    # Linux or WSL, g++, rustc, Java; stop other work first
+sh fuzz/run.sh 60                    # needs clang; seconds per harness
+```
+
+The benchmark script pins to CPU 2 and assumes that core is free, so numbers from
+a busy machine are rough at best. A checksum must match between books, and the
+C++ and Rust decoders must print the same line. To reproduce a fuzz crash, run
+the harness binary from `/tmp/lobmod_fuzz` on the `crash-*` file. See
+`docs/LATENCY.md` and `fuzz/README.md`.
+
+## 24. How do I replay an ITCH or IEX file of my own?
+
+You supply the file, and you are responsible for its licence. Nothing here
+downloads data. Write output outside the repository: the extracts and summaries
+derive from the input, and most data licences do not let you redistribute them.
+
+```bash
+# ITCH 5.0, gzipped or not: OUT_DIR gets a summary and per-symbol extracts
+python research/real_replay.py FILE.gz OUT_DIR [--max-seconds N] [--max-frames N] SYMBOL ...
+
+# IEX HIST DEEP or DEEP+ capture: OUT.json holds summary statistics only
+python research/iex_replay.py FILE.pcap.gz OUT.json [SYMBOL ...]
+```
+
+**Licence care.** IEX requires attribution, so anything you publish from HIST data
+must carry the text that `research/iex_replay.py` prints and stores in its output:
+
+> Data provided for free by IEX. By accessing or using IEX Historical Data, you
+> agree to the IEX Historical Data Terms of Use.
+
+Read the terms at https://www.iex.io/products/market-data-connectivity/hist-terms
+before you use the data. A clean run means the file and our code agree with each
+other. It does not show the book matches the venue's. IEX is one venue with a small
+share of volume, so its book does not describe the consolidated market. One such
+run is written up in `research/results_iex.md`.
+
+## 25. Common errors
+
+| Message | Cause | Fix |
+|---|---|---|
+| `price 100.004 is not a multiple of tick_size 0.01` | price off the grid | fix `tick_size` or round first; use `limit_ticks` for counts |
+| `order_id 1 is already live in the book` | id reused while resting | ids must be unique among live orders |
+| `cancel of unknown order_id 99` | order already filled or cancelled, or never added | on a feed, suspect a gap |
+| `unexpected CSV header 't'; expected 'seq,type,side,price,size,order_id'` | wrong file for the reader | use `read_times_csv` or the matching reader |
+| `unknown_type: message type b'Z'` (`ItchError`) | stream is not framed ITCH, or is misaligned | check it is decompressed; `strict=False` counts and reads on |
+| `unknown_order` in parser stats | a gap, or a symbol filter hiding its add | read the notes in `lobmod/feeds/itch50.py` |
+| `agent names must be unique` | two `AgentSpec` with one name | rename |
+| `FileNotFoundError` for `../data/...` | wrong working directory | run from `python/` |
+| `ModuleNotFoundError: lobmod` | path not set | `PYTHONPATH=src`, or `pip install -e .` from the root |
+| FastBook `OutOfBand` or `PoolFull` | price outside the band, or pool exhausted | widen `n_levels` or raise `max_orders` |
 
 ---
 
 ## Verifying the snippets
 
-Every fenced block was extracted, wrapped as the conventions describe and run on
-2026-11-05 from a clean export of the code, with these tools: Python 3.12 and
-numpy 2.4 on Windows, cargo release profile on Windows, JDK 27 on Windows, and
-g++ 15.2 under WSL (library compiled directly from `cpp/src`, not through
-`build.sh`). All 60 blocks compiled and ran without error, and the printed
-values of recipes 13-20 match their comments. Comments in recipes 1-12 were
-checked when they were written and were not compared line by line in this pass.
-Recipe 17 uses numpy's generator, so its values can move with the numpy version.
+Recipes 1-12 were run in all four languages on 2026-11-05 and their printed
+values compared with the comments, with these tools: Python 3.12 and numpy 2.4,
+cargo, and JDK 27 on Windows, and g++ under WSL (library compiled directly from
+`cpp/src`). Comments that differed were corrected: the KS p-value prints 0.863178
+in C++, Rust and Java and 0.863177 in Python, within the golden tolerance. Python
+recipes 21 and 22 were run with the same tools. Recipes 13-20 were last run in an
+earlier pass the same day, and recipes 23 and 24 are commands that were not run
+here. Recipe 17 uses numpy's generator, so its values can move with the numpy version.
 Re-run the same check after any API change: a snippet that stops compiling is a
 documentation bug.

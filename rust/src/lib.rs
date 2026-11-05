@@ -11,6 +11,8 @@
 //! * [`nn`] — deterministic MLP / logistic baselines (no RNG).
 //! * [`neldermead`] — pinned native Nelder-Mead.
 //! * [`rng`] — pinned 64-bit LCG (the only source of randomness).
+//! * [`fast_book`] — preallocated book for a bounded price band.
+//! * [`itch_decode`] — zero-copy binary ITCH 5.0 decoder and book mirror.
 //!
 //! Every formula, constant and iteration order is pinned by the contract so
 //! that this crate reproduces `data/golden/golden.json` from the bundled
@@ -25,6 +27,7 @@ pub mod fast_book;
 pub mod features;
 pub mod gof;
 pub mod hawkes;
+pub mod itch_decode;
 pub mod matrix;
 pub mod neldermead;
 pub mod nn;

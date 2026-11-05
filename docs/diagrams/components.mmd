@@ -84,10 +84,13 @@ classDiagram
         -ladder, bitset, node pool, id map
         +limit(side, ticks, size, id, sink) status
         +cancel(id) status
+        +rest(side, ticks, size, id) status
+        +reduce(id, by) status
+        +replace(id, new_id, ticks, size) status
         +market(side, size, sink) status
     }
     class Itch50Parser {
-        Python only, hand-built fixtures
+        Python only, fixtures and a real sample replay
         +parse(stream) FeedEvent, TradeReport, StatusMessage
     }
     class BookIntegrityChecker {

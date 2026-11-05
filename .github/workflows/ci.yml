@@ -31,11 +31,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -r requirements.txt pytest
-      - run: python -m pytest -q
+      - run: python -m pip install -r requirements.txt pytest pytest-cov
+      # Coverage is reported, not enforced.
+      - run: python -m pytest -q --cov=lobmod --cov-report=term
         env:
           PYTHONPATH: src
       - run: python demo.py
+      - name: Package installs and imports from outside the tree
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m pip install --no-deps "${{ github.workspace }}"
+          python -c "import lobmod, lobmod.feeds, lobmod.research, lobmod.sim; print(lobmod.__file__)"
 
   rust:
     runs-on: ubuntu-latest
@@ -82,6 +88,29 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y junit4 libhamcrest-java
       - run: bash build.sh
       - run: bash test.sh
+
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh fuzz/run.sh 60
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: crash-*
+          if-no-files-found: ignore
+
+  # Advisory: findings show in the log and never fail the workflow.
+  clang-tidy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang-tidy
+      - run: cmake -S cpp/fast -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - run: clang-tidy -p build-tidy cpp/fast/bench.cpp cpp/fast/itch_bench.cpp cpp/fast/test_itch.cpp cpp/src/book.cpp
 
   docs:
     runs-on: ubuntu-latest

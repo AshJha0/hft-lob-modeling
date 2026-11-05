@@ -55,8 +55,10 @@ flowchart TD
     BS --> GOLD
     GJ --> GOLD
 
-    subgraph FEEDS["lobmod.feeds (Python, hand-built fixtures)"]
+    subgraph FEEDS["lobmod.feeds (Python)"]
         IT["Itch50Parser<br/>framed ITCH 5.0"] --> EV["EventV2 stream<br/>ts_ns, L C M R U E"]
+        PC["CaptureReader<br/>pcap, pcapng"] --> IX["IexParser<br/>DEEP, DEEP+"]
+        IX --> EV
         EV --> IC["BookIntegrityChecker"]
     end
     LV --> RV["read_events_v2_csv / replay_v2<br/>all four ports"]
@@ -82,6 +84,7 @@ flowchart TD
         ENG["Simulator<br/>Hawkes flow, informed takers,<br/>agents behind latency"]
         ACC["attribution, realised spread,<br/>fill by queue"]
         ENG --> ACC
+        CAL["sim.calibrate<br/>criteria checks, fit failed"] --> ENG
     end
     BK --- ENG
     RNG --> ENG
@@ -89,7 +92,9 @@ flowchart TD
 
     subgraph FAST["FastBook (C++, Rust)"]
         FB["FastBook<br/>band, pool, sink"]
+        DEC["ITCH binary decoder<br/>decode, apply"]
         BEN["benchmarks"]
+        DEC --> FB
         FB --> BEN
     end
     BK -. "differential tests" .- FB

@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> Validate : limit
+    Validate --> Rejected : bad price, bad size, duplicate id
+    Validate --> Matching : accepted
+    Matching --> Filled : crosses, all size traded
+    Matching --> Resting : remainder joins the tail of its level
+    Resting --> Resting : R reduce or partial E, queue place kept
+    Resting --> Filled : E or a taker trades the last unit
+    Resting --> Cancelled : C, or R of the full size
+    Resting --> Replaced : U, old id leaves
+    Replaced --> Matching : new id, priority lost
+    Rejected --> [*]
+    Filled --> [*]
+    Cancelled --> [*]

@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph IDS["Id map: open addressing, at most half full"]
+        ID["order id to node handle<br/>linear probing, backward-shift delete"]
+    end
+    subgraph POOL["Node pool: one array, free list"]
+        N1["node a<br/>size, side, level, prev, next"]
+        N2["node b"]
+        N3["node c"]
+        N1 <--> N2
+        N2 <--> N3
+    end
+    subgraph SIDE["Per side: bid and ask alike"]
+        LAD["Flat ladder<br/>one entry per tick of the band<br/>head, tail, total, order count"]
+        BITS["Hierarchical bitset<br/>one bit per live level"]
+        BEST["Cached best level,<br/>side totals"]
+        BITS --> BEST
+        BEST --> LAD
+    end
+    ID -- "cancel, reduce, replace" --> N2
+    LAD -- "head of FIFO" --> N1
+    LAD -- "tail of FIFO" --> N3
+    CTOR["Constructor<br/>only allocation, only throw"] -.-> POOL
+    CTOR -.-> LAD
+    CTOR -.-> ID

@@ -286,7 +286,7 @@ def main():
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--out", default=str(ROOT / "research" / "results.md"))
     a = ap.parse_args()
-    scale = dict(seeds=12, maker_seeds=6, lr_boot=49, gof_boot=49, size_reps=30, size_boot=29,
+    scale = dict(seeds=60, maker_seeds=20, lr_boot=199, gof_boot=199, size_reps=100, size_boot=29,
                  power_reps=10, power_boot=19)
     if a.quick:
         scale = dict(seeds=2, maker_seeds=2, lr_boot=5, gof_boot=9, size_reps=4, size_boot=5,

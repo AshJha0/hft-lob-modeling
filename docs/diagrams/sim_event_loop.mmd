@@ -1,0 +1,22 @@
+sequenceDiagram
+    participant M as Book and flow (clock-time heap)
+    participant D as Market-data delay
+    participant A as Agent strategy
+    participant O as Order-entry delay
+
+    M->>D: touch or fair value changes at t
+    D->>A: view arrives at t + md_latency
+    A->>A: decide on the stale view
+    A->>O: cancel and new quote at t1
+    Note over M: flow keeps running while messages travel
+    M->>M: taker fills the old quote at t2, before t1 + oe_latency
+    M->>D: fill report leaves at t2
+    O->>M: cancel lands at t1 + oe_latency
+    Note over M: order already gone, late_cancels + 1
+    O->>M: new quote lands, post-only
+    alt it would cross
+        M->>D: reject, rejects + 1
+    else it rests
+        M->>M: lots ahead logged, joins the tail
+    end
+    D->>A: fill report at t2 + md_latency updates inventory

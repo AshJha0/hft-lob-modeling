@@ -1,0 +1,13 @@
+flowchart LR
+    F["Fill: signed size q, price p"] --> M0["m0: mid just before the fill"]
+    M0 --> MH["mh: mid one horizon later"]
+    MH --> MT["mT: mid at the end"]
+    F --> S["spread = q (m0 - p)<br/>earned at the fill"]
+    M0 --> AD["adverse = q (mh - m0)<br/>the move straight after"]
+    MH --> INV["inventory = q (mT - mh)<br/>holding the position"]
+    S --> SUM["sum over fills, less fees<br/>= total"]
+    AD --> SUM
+    INV --> SUM
+    CASH["Booked separately:<br/>cash + position x mT - fees"] --> CHK{"equal?"}
+    SUM --> CHK
+    CHK --> OK["a real check,<br/>two independent routes"]

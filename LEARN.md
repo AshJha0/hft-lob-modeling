@@ -404,7 +404,7 @@ but those are parameters nobody fitted, so that number says little about power.
 Two caveats. With tiny $n$ the asymptotic p-value is only indicative. The larger
 one: the p-value assumes parameters fixed in advance, and testing residuals at
 *fitted* parameters makes the test far too lenient, not slightly conservative.
-The fit absorbs most of the discrepancy. In simulation, 0 of 400 runs rejected at
+The fit absorbs most of the discrepancy. In the v1.2.0 review's simulation, 0 of 400 runs rejected at
 5% under the true model, where a calibrated test would reject about 20, and wrong
 kernels were rejected only 3–5% of the time. Read "no rejection" here as very
 weak evidence. A parametric bootstrap that refits on each simulated path gives
@@ -486,8 +486,9 @@ than the model:
    the majority class. Goldens: MLP 0.7042145594, logistic 0.6996168582,
    majority 0.6582375479 on the 1305-row holdout. The gaps are the story: most
    of the accuracy is the flat-class base rate, and the MLP's ~0.5 point lead over
-   logistic on this one split does not hold up: across 100 seeds logistic beats
-   the MLP by 0.59 points (SE 0.16). What the models learn is generator
+   logistic on this one split does not hold up: across 60 streams MLP minus
+   logistic is −0.53 points [−0.95, −0.12], and an earlier 100-seed run gave −0.59
+   (SE 0.16). What the models learn is generator
    mechanics, since spread alone gives 0.693 of the 0.704. Compare models over
    many seeds before reading anything into a gap this small.
 5. **Degenerate cases must not crash.** All-one-class labels still train (loss
@@ -655,8 +656,8 @@ axis:
 - **Feeds and state reconstruction.** Real systems build the book from
   ITCH-style market-data feeds (OUCH is the order-entry protocol, not a feed), handle A/B feed arbitration, gaps,
   retransmits, and venue-specific auction/halt states; messages can arrive out
-  of order across venues. Here the event stream is clean, complete and
-  sequenced by construction.
+  of order across venues. The bundled stream is clean, complete and sequenced by
+  construction. `lobmod.feeds` reads recorded files, not live feeds.
 - **Risk and controls.** Kill switches, fat-finger and self-trade prevention,
   position/notional limits checked in-line, exchange throttles and
   message-rate budgets, and (post-Knight-Capital) regulatory-grade deployment
@@ -673,10 +674,9 @@ them: research layer, not the trading loop.
 
 A concrete, honest workflow for a market-microstructure research desk:
 
-1. **Reconstruct and audit.** Convert a captured feed into the `L/C/M`
-   schema. The schema has no execute-by-id, partial cancel (reduce) or replace
-   message, so those must be mapped by hand or the replay will not match the
-   venue's book. Use prices in *integer ticks* (`price_ticks = round(price /
+1. **Reconstruct and audit.** Convert a captured feed into v2 events with
+   `lobmod.feeds` (COOKBOOK recipe 24), which maps executions, partial cancels
+   and replaces to `E`, `R` and `U`. Use prices in *integer ticks* (`price_ticks = round(price /
    tick)`; the library refuses off-grid prices, prices that round to 0 ticks,
    and tick counts beyond 9e18, so a wrong `tick_size` fails loudly instead of
    silently rescaling). `replay` then rebuilds top-of-book state after every
@@ -699,7 +699,8 @@ A concrete, honest workflow for a market-microstructure research desk:
    signal does not survive *that*, it will not survive fees, adverse
    selection and latency; if it does, the next step is an event-driven
    test with queue position and fill probability. `lobmod.sim` shows the shape
-   of one, but it is uncalibrated, so a desk would need its own on real data.
+   of one, but calibrating it to real data failed (section 10.13), so a desk
+   would need its own.
 4. **Reproduce across languages.** The same goldens are asserted by the
    Python, C++, Rust and Java ports, so a research result computed in Python
    can be re-run in the production language and compared to 1e-8, which is
@@ -707,7 +708,7 @@ A concrete, honest workflow for a market-microstructure research desk:
 
 What the library leaves to the desk: clock-time feature windows (the pinned
 pipeline counts *events*), calendars and sessions, auctions and halts as book
-states, and calibration of anything to real data. Timestamps, reduce, replace,
+states, and any model calibrated to real data. Timestamps, reduce, replace,
 execute, fees, latency and "our" order in the queue now exist in the layers
 described in section 10.
 
@@ -751,7 +752,7 @@ described in section 10.
    published microstructure backtests flatter themselves.
 10. **KS on estimated parameters and tiny samples.** Both make the stated
     p-value wrong. With fitted parameters it is far too large (0/400 rejections
-    at 5% under the true model, §3.7), so use the bootstrap in `lobmod.research`.
+    in the v1.2.0 review at 5% under the true model, §3.7), so use the bootstrap in `lobmod.research`.
     With small $n$ the asymptotic formula is inaccurate; such input is legal
     and the caveat is on the caller.
 
@@ -760,8 +761,16 @@ described in section 10.
 ## 10. Beyond the pinned core
 
 Sections 1 to 9 describe the pinned, four-language core. This section covers the
-layers around it. All evidence here is synthetic. Numbers come from
-`research/results_models.md`, `research/results_sim.md` and `docs/LATENCY.md`.
+layers around it. Bundled data is simulated, and the IEX results in
+`research/results_iex.md` are the only real-data numbers published. Other numbers
+come from `research/results_models.md`, `research/results_sim.md` and
+`docs/LATENCY.md`.
+
+A note on sources in sections 10.7 to 10.11: Crossref confirmed that each cited
+paper exists with the details given in the README references. That confirms the
+citation, not my reading of it. Where a formula is derived here you can check it
+yourself; other statements about what a paper says are from memory and are marked
+so.
 
 ### 10.1 L3 events
 
@@ -844,10 +853,10 @@ marked invalid.
 
 **Worked example.** Ask 101 at entry, bid 103 at exit, fee 0.1: long is
 $103 - 101 - 0.2 = 1.8$, so UP. If the bid at exit is 101, the mid may well have
-risen, but long is $-0.2$, so FLAT. Over 10 ZI streams with no fee or delay, the
+risen, but long is $-0.2$, so FLAT. Over 30 ZI streams with no fee or delay, the
 share of events where a long round trip pays is 0.011 at $H = 10$ and 0.203 at
 $H = 200$. The mean of the better round trip, which needs perfect foresight, is
-−0.861 ticks at $H = 10$. Models trained on these labels mostly learn not to
+−0.868 ticks at $H = 10$. Models trained on these labels mostly learn not to
 trade at short horizons.
 
 ### 10.4 The execution simulator
@@ -874,16 +883,16 @@ Realised spread per lot at horizon $h$ is the mean of $\text{sign}\cdot(m_{t+h} 
 Three strategies are included: a touch-joining quoter, an Avellaneda-Stoikov
 quoter with a rolling horizon, and a taker that crosses stale quotes.
 
-**Worked example.** Naive maker, 10 ms one way, 20 seeds, 600 s, zero fees:
-spread 368.8, adverse −120.1, inventory 24.4, total 273.0 ticks per run (rounded
+**Worked example.** Naive maker, 10 ms one way, 40 seeds, 600 s, zero fees:
+spread 363.6, adverse −116.3, inventory 22.6, total 269.8 ticks per run (rounded
 terms). About a third of what it earned at the touch went to the next second's move.
 
 **Two caveats that change the reading.**
 
 - *The free fair-value feed.* Agents get a delayed view of the hidden fair value
   at no cost, and that feed is what creates the cancel race. With it, the naive
-  maker gains 97.9 [72.7, 123.2] ticks going from 100 ms to 2 ms. Without it the
-  same difference is −4.7 [−34.2, 24.7]: the latency effect is not
+  maker gains 73.2 [52.0, 94.5] ticks going from 100 ms to 2 ms. Without it the
+  same difference is −10.8 [−32.1, 10.5]: the latency effect is not
   distinguishable from zero. So the result is about the value of a fast signal
   in this model. It is not a measurement of what latency is worth.
 - *Maker levels are not an edge.* Every parameter was set by judgement, and the
@@ -891,31 +900,244 @@ terms). About a third of what it earned at the touch went to the next second's m
   except the optional fast rival. Positive P&L reflects the assumed share of
   uninformed flow. Only signs and orderings inside the model are worth reading.
 
-An older zero-intelligence replay showed P&L rising with a looser inventory cap.
-The attribution in `research/results_sim.md` traces most of that to the ZI mid
-mean-reverting, which is a property of the generator and not of the strategy.
+An older zero-intelligence replay showed P&L rising with a looser inventory cap,
+362 ticks at cap 20. A control was run to test whether mean reversion in the ZI mid
+explains that. It was inconclusive ([results_control.md](research/results_control.md)):
+mean reversion is only partly supported, and the cause is not settled.
 
 ### 10.5 How FastBook differs
 
 **The idea.** The reference book favours clarity. Its cancel scans a queue, and
 its containers allocate. FastBook keeps the same matching rules and pays for
-speed by fixing its limits in advance.
+speed by fixing its limits in advance. It is fast for three plain reasons. Nothing
+is searched, because an id leads straight to a node and a price straight to a
+ladder entry. Nothing is allocated. And a level's FIFO is linked through the
+nodes, so removing an order touches only its two neighbours.
 
 **Formally.** It has a flat ladder with one entry per tick in a fixed band, a
 hierarchical bitset to find the next live level, a node pool with an intrusive
 doubly linked FIFO per level (O(1) unlink), and an open-addressing id map. All
 memory is taken at construction. A limit outside the band returns an error even
 if it would have crossed, a full pool refuses every limit, prices are ticks
-only, and fills go to a caller's callback. There is no reduce, replace or
-execute, and no Java or Python version.
+only, and fills go to a caller's callback. `rest`, `reduce` and `replace` exist so
+that the ITCH decoder can mirror a feed, where the venue has already matched.
+There is no `execute` that reports a fill, and no Java or Python version. The
+layout is the FastBook diagram in `docs/ARCHITECTURE.md`.
 
-**Worked example.** From `docs/LATENCY.md`, on a busy laptop under WSL2, book
-only: reverse cancel of 100,000 orders at one price costs a mean 48,528 / 46,204
-ns per cancel for the C++ reference book (two runs) and 16 / 40 ns for FastBook.
-Throughput on the mixed script is about 5x in C++ and 2.4x to 3.4x in Rust. Yet
-FastBook's passive add is no faster than the C++ reference at p50 and slower than
-the Rust one. A better worst case is not the same as a faster everything, and
-none of these figures is wire-to-wire.
+**Worked example.** From `docs/LATENCY.md`, on an idle laptop under WSL2, book
+only: reverse cancel of 100,000 orders at one price costs a mean 43,616 / 44,351
+ns per cancel for the C++ reference book (two runs) and 12 / 9 ns for FastBook.
+Throughput on the mixed script is about 7.5x in C++ and 4.2x to 4.5x in Rust. At
+p50 a passive add takes 32 to 35 ns against 115 to 125 ns for the C++ reference
+and 34 ns against 89 to 90 ns for the Rust one. None of these figures is
+wire-to-wire.
+
+Measure on a quiet machine. An add is cheap in the reference book when the level
+exists, since it appends to a queue and updates a map, so its gain is smaller than
+cancel's: 2.6x to 3.9x at p50 against 3x to 5.4x. Timings taken while other work
+was running hid that gain, and they are not quoted here.
+
+### 10.6 One order, from feed message to P&L
+
+**The idea.** Follow a single order through every layer: bytes, event, book, fill,
+accounting.
+
+**Formally.** ITCH message `A` becomes event `L`, `E` becomes event `E` plus a trade
+record, and `D` becomes `C`. The execution message carries no price, since the
+order it names already has one, so the book supplies the price. The attribution is
+the three-term split of section 10.4.
+
+**Worked example.** These messages are built by hand. Prices have four implied
+decimals, so one unit is 0.0001 dollars. We follow order 1, a bid for 100 shares at
+100.00. Suppose it is ours.
+
+```python
+import io
+import struct
+
+from lobmod.feeds import BookIntegrityChecker, FeedEvent, Itch50Parser
+
+def head(kind, ts_ns):
+    return kind + struct.pack(">HH", 1, 0) + ts_ns.to_bytes(6, "big")
+
+def frame(msg):
+    return struct.pack(">H", len(msg)) + msg
+
+stock = b"TEST    "
+
+def add(ts, oid, side, size, px):
+    return head(b"A", ts) + struct.pack(">QcI", oid, side, size) + stock + struct.pack(">I", px)
+
+messages = [
+    head(b"R", 1) + stock + b"Q" + bytes(19),         # directory: locate 1 is TEST
+    add(2, 1, b"B", 100, 1_000_000),                  # our bid, 100 at 100.00
+    add(3, 2, b"S", 100, 1_000_200),                  # an offer at 100.02
+    head(b"E", 4) + struct.pack(">QIQ", 1, 30, 77),   # a seller takes 30 of ours
+    add(5, 3, b"S", 50, 1_000_100),                   # a better offer arrives
+    head(b"D", 6) + struct.pack(">Q", 3),             # and is pulled
+]
+parser = Itch50Parser(symbols=["TEST"])
+checker = BookIntegrityChecker()
+mids = []
+for item in parser.parse(io.BytesIO(b"".join(map(frame, messages)))):
+    if isinstance(item, FeedEvent):
+        checker.apply(item.event)
+        mids.append(checker.book.mid())
+print(mids[2:])                                              # [1000100.0, 1000050.0, 1000100.0]
+print(checker.book.best_bid(), checker.book.best_bid_size())   # 1000000 70
+
+q, p = 30, 1_000_000
+m0, mh, mT = 1_000_100, 1_000_050, 1_000_100
+print(q * (m0 - p), q * (mh - m0), q * (mT - mh), q * (mT - p))   # 3000 -1500 1500 3000
+```
+
+The order rests with 100, and the execution leaves 70 in the same queue place. We
+bought 30 at 100.00 when the mid was 100.01, so spread capture is 3,000 units, or
+$0.30. The mid then fell half a cent, which costs 1,500 units of adverse selection.
+It came back by the end, for +1,500 of inventory. Total 3,000, which equals
+$q(m_T - p)$, as it must. Here the next mid change stands in for the one-horizon
+move, and we still hold 30 shares marked at a mid we might not be able to trade at.
+
+### 10.7 Market making: inventory and adverse selection
+
+**The idea.** A market maker earns the spread when buyers and sellers alternate.
+Two things take it back. Inventory: fills do not balance, and a position held is a
+bet. Adverse selection: the people who hit your quote may know something, so fills
+tend to come just before the price moves against you.
+
+**Formally.** Avellaneda and Stoikov shade quotes around a reservation price. With
+mid or reference $s$, inventory $q$, risk aversion $\gamma$, variance rate
+$\sigma^2$, horizon $\tau$ and fill-rate decay $\kappa$, the form coded in
+`sim.AvellanedaStoikov` is
+
+$$
+r = s - q\gamma\sigma^2\tau, \qquad
+\delta = \frac{\gamma\sigma^2\tau}{2} + \frac{1}{\gamma}\ln\left(1 + \frac{\gamma}{\kappa}\right),
+$$
+
+quoting $r \pm \delta$ rounded outward to ticks. The paper has a terminal date.
+Here $\tau$ is a fixed rolling horizon, which is a simplification. Inventory
+models of dealer quotes go back at least to Ho and Stoll (1981).
+
+**Worked example.** With the defaults $\gamma = 0.1$, $\sigma^2 = 0.7$, $\tau = 5$,
+$\kappa = 0.5$, we get $\gamma\sigma^2\tau = 0.35$ and $\delta = 0.175 + 1.823 =
+1.998$. With $s = 10000$ and $q = 0$ the code quotes 9998 and 10002. At $q = 2$,
+$r = 9999.3$, and it quotes 9997 and 10002: a lower bid, so it buys less, while the
+ask rounds to the same tick. In `lobmod.sim` the two risks show up by name:
+`inventory` and `adverse` in the attribution, and informed takers and
+`p_informed` as their source. Recipe 21 turns the informed flow off, and the
+adverse term changes sign.
+
+### 10.8 Kyle: how much a trade should move the price
+
+**The idea.** A dealer cannot tell an informed order from noise, so every order
+moves the price a little. The less noise there is, the more each order says.
+
+**Formally.** One period. Value $v \sim N(\mu, \sigma_v^2)$, noise $u \sim N(0,
+\sigma_u^2)$, and an insider sends $x$. The dealer sees $y = x + u$ and sets
+$p = \mu + \lambda y$. The insider maximises $x(v - \mu - \lambda x)$, so
+$x = \beta(v - \mu)$ with $\beta = 1/(2\lambda)$. Dealer pricing needs
+$\lambda = \operatorname{cov}(v, y)/\operatorname{var}(y) =
+\beta\sigma_v^2/(\beta^2\sigma_v^2 + \sigma_u^2)$. Solving the two gives
+$\lambda = \sigma_v/(2\sigma_u)$.
+
+**Worked example.** $\sigma_v = 2$ dollars and $\sigma_u = 100$ shares give
+$\lambda = 0.01$: a net 50 shares of buying moves the price 50 cents. Double the
+noise and the move halves. This repository has no Kyle model. The closest thing is
+regressing mid changes on OFI, as in section 4.
+
+### 10.9 Glosten-Milgrom: why spreads exist with no costs
+
+**The idea.** A dealer quotes so that it breaks even against whoever turns up. Since
+a buy is more likely when the news is good, the ask must sit above the current
+expected value. The spread is the price of being picked off.
+
+**Formally.** Value is $H$ or $L$ with equal chance. A share $\pi$ of traders knows
+which; the rest buy or sell at random. Then $P(H \mid \text{buy}) = (1 + \pi)/2$, so
+the ask is $E[v \mid \text{buy}] = L + (H - L)(1 + \pi)/2$, the bid mirrors it, and
+the spread is $\pi(H - L)$.
+
+**Worked example.** $H = 101$, $L = 99$, $\pi = 0.2$: ask 100.2, bid 99.8, spread
+0.4. After a buy, the dealer's belief in $H$ rises to 0.6, and quotes move up. So
+quotes learn from trades. `lobmod.sim` has informed takers but no competitive
+dealer, so its spreads are not set by this break-even rule.
+
+### 10.10 Square-root impact
+
+**The idea.** A large order moves the price less than in proportion to its size:
+four times the size costs about twice the impact.
+
+**Formally.** From memory of the empirical literature, for example Tóth et al.
+(2011): $I(Q) \approx Y \sigma \sqrt{Q/V}$, with $\sigma$ daily volatility, $V$ daily
+volume and $Y$ a constant of order one. It is an empirical regularity for
+metaorders, which are parent orders split over time, and it is not derived here.
+
+**Worked example.** $\sigma = 2\%$ and $Q/V = 1\%$ give $I \approx Y \times 0.2\%$,
+or about 20 basis points if $Y = 1$. At $Q/V = 4\%$ it is about 40. Nothing here
+implements or tests this: `lobmod.sim` has no metaorders, and its impact comes only
+from walking the book.
+
+### 10.11 Lee-Ready: who was the aggressor?
+
+**The idea.** Many trade files do not say which side initiated a trade, so you
+infer it from where the trade printed.
+
+**Formally.** The quote rule says a trade above the mid is a buy, and below it a
+sell. A trade at the mid falls to the tick test: a buy if the price rose from the
+last different price, a sell if it fell. Lee and Ready (1991) also dealt with the
+delay between quotes and trades. Timestamp problems in fast markets are the
+subject of Holden and Jacobsen (2014), which I cite from memory
+(https://doi.org/10.1111/jofi.12127; the record is on Crossref).
+
+**Worked example.** Quotes 100.00 and 100.02, so the mid is 100.01. A trade at 100.02
+is a buy. A trade at 100.01 after a last different price of 100.00 is a buy by the
+tick test. This repository mostly does not need the rule: an ITCH or DEEP+ execution
+names a resting order, so the aggressor is the other side. `research/iex_replay.py`
+uses only the first half of it, for fills with no side, and drops a fill at the mid.
+
+### 10.12 How to read a backtest honestly
+
+**The idea.** A backtest is a claim, and most claims fail for dull reasons. Each of
+these mistakes was made, or nearly made, in this repository.
+
+1. **Overlapping trades.** `signal_pnl` opens a trade on each signal with no
+   position limit, so holds overlap, and 177 trades are not 177 independent
+   observations. Count effective bets, and use `run_backtest`, which pays the
+   spread both ways.
+2. **One seed.** On the bundled split the MLP beats logistic. Across 60 streams
+   MLP minus logistic is −0.53 points [−0.95, −0.12]. Ask how the result varies across
+   seeds, before you ask why it won.
+3. **Weak goodness of fit with fitted parameters.** KS on fitted parameters
+   rejected 0 of 400 true models and only 3 to 5% of wrong kernels in the v1.2.0
+   review. "Not rejected"
+   was close to a statement about the test. Use a test that refits, like the
+   bootstrap.
+4. **A horizon no taker can win.** At $H = 10$ a long round trip pays on 1.1% of
+   events, and even perfect foresight averages −0.868 ticks. Accuracy at that
+   horizon is unrelated to money. Work out the best possible P&L before you model.
+5. **Calibration that failed.** The criteria were written first, and the attempt
+   failed (section 10.13). Had the targets been chosen afterwards, it might have
+   looked fine. Write the pass mark down first, and report the failure.
+6. **A control with no verdict.** The +362 control's gate could not be met at any
+   setting, so it gave no verdict under its rule. The honest report is
+   "inconclusive", even though a story was available.
+
+Before believing a result, ask: what would have made this fail, and was that
+written down before the run?
+
+### 10.13 What was run on real data
+
+Data provided for free by IEX. By accessing or using IEX Historical Data, you agree to the IEX Historical Data Terms of Use. Terms: <https://www.iex.io/products/market-data-connectivity/hist-terms>.
+
+One IEX DEEP+ file, 12 December 2025, was replayed for AAPL, MSFT and INTC with no gaps or anomalies reported, every displayed execution at the touch and an empty book at the end of the day. Those are the only real-data numbers published, in [research/results_iex.md](research/results_iex.md). They describe IEX's own thin displayed book, which is not the NBBO, on one day.
+
+The parser and book were replayed on public ITCH 5.0 sample files for ten symbols with no parser or book anomalies and every execution at the touch. That is internal consistency, not comparison with a venue snapshot. Raw data is not redistributed.
+
+Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED: it did not meet the criteria in sample, parameters did not carry across the day, and the held-out day was not run. The simulator remains uncalibrated and its P&L levels mean nothing.
+
+Hawkes on real trades, qualitative only: a seasonal two-timescale model is preferred over a single exponential, but the fast rate hits its bound and branching is not resolved, so no value is quoted. Sub-millisecond burst structure cannot be attributed to a mechanism from this feed. The "Branching against
+seasonality" diagram in `docs/ARCHITECTURE.md` shows why the two explanations are
+hard to separate.
 
 ---
 
@@ -958,7 +1180,7 @@ Time-rescaling: transform event times through the fitted compensator
 $\Lambda$; increments must be iid Exp(1). Check with a KS test (plus a mean
 ≈ 1 sanity check and monotone $\Lambda$). Rejection means misspecification —
 wrong kernel shape, missing marks, or nonconstant baseline. No rejection means
-little when the same data estimated the parameters: here that test rejected
+little when the same data estimated the parameters: in the v1.2.0 review that test rejected
 0/400 true models and only 3–5% of wrong kernels, so refit inside a parametric
 bootstrap (`lobmod.research`).
 
@@ -1008,25 +1230,18 @@ edge case and test in every language.)
 This lab stops well short of the field. These are the next things to read, and
 they are not implemented here, except where an entry says otherwise:
 
-- **Kyle (1985)** and **Glosten-Milgrom (1985)**: price formation under informed
-  trading, and why spreads exist at all.
-- **Avellaneda-Stoikov (2008)**: inventory-aware market-making quotes. A
-  simplified version with a fixed rolling horizon is a strategy in `lobmod.sim`.
-  The derivation is not covered.
 - **Almgren-Chriss (2001)**: optimal execution against impact and risk.
-- **Propagator and square-root impact**: how impact builds and decays with size
-  and time.
-- **Queue-reactive models** (Huang, Lehalle & Rosenbaum, 2015): order flow whose
-  rates depend on the book state. The simulator's limit and cancel rates react
-  to touch size and imbalance in that spirit, but with assumed rates. It is not
-  their model and nothing was estimated.
-- **Lee-Ready (1991)** trade signing: how trades are signed on real data. Not
-  implemented. Realised spread is implemented for simulated fills (section 10.4).
+- **Propagators**: how impact decays over time. Square-root impact has a short
+  section at 10.10.
+- **Queue-reactive models** (Huang, Lehalle & Rosenbaum, 2015): rates that depend
+  on book state. The simulator's flow is in that spirit, with assumed rates.
 - **Hasbrouck (1991, 1995)**: VAR models of trades and quotes, and information
   shares.
 - **The Epps effect**: correlations that shrink at short sampling intervals.
-- **Marked Hawkes processes**: excitation that depends on order size. The
-  bivariate model has event types only, so marks are not covered.
+- **Marked Hawkes processes**: excitation that depends on order size.
+
+Kyle, Glosten-Milgrom, Avellaneda-Stoikov and Lee-Ready now have short sections
+(10.7 to 10.11), but the first three are not derived in full.
 
 ---
 
@@ -1059,6 +1274,9 @@ they are not implemented here, except where an entry says otherwise:
   Prices*, CUP — the modern textbook.
 - Zhang, Zohren & Roberts (2019), *DeepLOB*, IEEE TSP — deep learning on LOBs
   done at scale; contrast its CNN/LSTM with our deliberately tiny MLP.
+- Kyle (1985), *Continuous auctions and insider trading*, Econometrica; Glosten &
+  Milgrom (1985), J. Financial Economics; Lee & Ready (1991), J. Finance; Tóth et
+  al. (2011), Physical Review X. Full details are in the README references.
 - Harris (2003), *Trading and Exchanges* — market mechanics and conventions.
 - Stephens (1970), J. Royal Stat. Soc. B — the KS small-sample correction;
   Press et al., *Numerical Recipes*, §14.3 — the pinned p-value form.
