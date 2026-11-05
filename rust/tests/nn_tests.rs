@@ -79,7 +79,12 @@ fn loss_decreases_over_epochs() {
     let hist = net.fit(&x, &y, 0.1, 300).unwrap();
     assert_eq!(hist.len(), 300);
     assert!(hist.iter().all(|v| v.is_finite()));
-    assert!(hist[299] < hist[0], "loss should decrease: {} -> {}", hist[0], hist[299]);
+    assert!(
+        hist[299] < hist[0],
+        "loss should decrease: {} -> {}",
+        hist[0],
+        hist[299]
+    );
     // and substantially so on this separable toy problem
     assert!(hist[299] < 0.9 * hist[0]);
 }
@@ -130,7 +135,10 @@ fn degenerate_one_class_labels_train_and_lose_to_majority() {
     let acc_mj = accuracy(&y, &pred_mj).unwrap();
     let acc_nn = accuracy(&y, &net.predict(&x).unwrap()).unwrap();
     assert_eq!(acc_mj, 1.0);
-    assert!(acc_mj >= acc_nn, "the majority baseline wins — not an error");
+    assert!(
+        acc_mj >= acc_nn,
+        "the majority baseline wins — not an error"
+    );
 }
 
 #[test]
@@ -207,11 +215,8 @@ fn nn_validation_errors() {
 
 #[test]
 fn nelder_mead_minimizes_quadratic() {
-    let res = nelder_mead_default(
-        |x| (x[0] - 2.0).powi(2) + (x[1] + 3.0).powi(2),
-        &[0.0, 0.0],
-    )
-    .unwrap();
+    let res =
+        nelder_mead_default(|x| (x[0] - 2.0).powi(2) + (x[1] + 3.0).powi(2), &[0.0, 0.0]).unwrap();
     assert!(res.converged);
     assert!((res.x[0] - 2.0).abs() < 1e-6 && (res.x[1] + 3.0).abs() < 1e-6);
     assert!(res.fval < 1e-12);

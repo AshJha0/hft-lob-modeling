@@ -17,8 +17,7 @@ use lobmod::{
     LimitOrderBook, LobError, Mlp, Standardizer,
 };
 
-const LINE: &str =
-    "--------------------------------------------------------------------";
+const LINE: &str = "--------------------------------------------------------------------";
 
 fn section(title: &str) {
     println!("\n{LINE}\n{title}\n{LINE}");
@@ -39,7 +38,12 @@ fn run() -> Result<(), LobError> {
     }
     let count = |t: EventType| events.iter().filter(|e| e.etype == t).count();
     let volume: i64 = book.trades.iter().map(|f| f.size).sum();
-    let finite_spread: Vec<f64> = states.spread.iter().copied().filter(|v| v.is_finite()).collect();
+    let finite_spread: Vec<f64> = states
+        .spread
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
     let mean_spread = finite_spread.iter().sum::<f64>() / finite_spread.len() as f64;
     let (mut mid_min, mut mid_max, mut n_nan) = (f64::INFINITY, f64::NEG_INFINITY, 0usize);
     for &m in &states.mid {
@@ -98,7 +102,11 @@ fn run() -> Result<(), LobError> {
     println!(
         "  branching ratio alpha/beta = {:.4}  ({}; {:.0}% of events are endogenous offspring)",
         fit_u.branching,
-        if fit_u.branching < 1.0 { "stationary" } else { "NON-STATIONARY" },
+        if fit_u.branching < 1.0 {
+            "stationary"
+        } else {
+            "NON-STATIONARY"
+        },
         100.0 * fit_u.branching
     );
     println!(
@@ -112,7 +120,11 @@ fn run() -> Result<(), LobError> {
     println!("time-rescaled inter-arrivals should be iid Exp(1) under the model:");
     println!(
         "  fitted params : KS stat {d:.4}, p-value {p:.4} -> {}",
-        if p > 0.05 { "no rejection (test is weak with fitted parameters)" } else { "REJECT" }
+        if p > 0.05 {
+            "no rejection (test is weak with fitted parameters)"
+        } else {
+            "REJECT"
+        }
     );
     let tau_wrong = uni_residuals(&t_uni, t_horizon_uni, 1.5, 0.1, 3.0)?;
     let (dw, pw) = ks_test_exp(&tau_wrong)?;
@@ -143,17 +155,32 @@ fn run() -> Result<(), LobError> {
     println!(
         "  spectral radius of branching matrix = {:.4} ({})",
         fit_b.spectral_radius,
-        if fit_b.spectral_radius < 1.0 { "stationary" } else { "NON-STATIONARY" }
+        if fit_b.spectral_radius < 1.0 {
+            "stationary"
+        } else {
+            "NON-STATIONARY"
+        }
     );
     println!("  interpretation: self terms exceed cross terms because the simulation was");
     println!("  parameterised that way; the fit recovers them. This checks the estimator");
     println!("  and says nothing about real order flow.");
-    let taus = biv_residuals(&t_biv, &k_biv, t_horizon_biv, &fit_b.mu, &fit_b.alpha, fit_b.beta)?;
+    let taus = biv_residuals(
+        &t_biv,
+        &k_biv,
+        t_horizon_biv,
+        &fit_b.mu,
+        &fit_b.alpha,
+        fit_b.beta,
+    )?;
     for (name, tt) in ["buy", "sell"].iter().zip(&taus) {
         let (dd, pp) = ks_test_exp(tt)?;
         println!(
             "  KS residuals ({name:4}): stat {dd:.4}, p {pp:.4} -> {}",
-            if pp > 0.05 { "no rejection (test is weak with fitted parameters)" } else { "REJECT" }
+            if pp > 0.05 {
+                "no rejection (test is weak with fitted parameters)"
+            } else {
+                "REJECT"
+            }
         );
     }
 
@@ -211,9 +238,18 @@ fn run() -> Result<(), LobError> {
         cfg.epochs
     );
     println!("\n  model                holdout accuracy");
-    println!("  MLP (16,8)               {:.4}", accuracy(y_te, &pred_nn)?);
-    println!("  logistic regression      {:.4}", accuracy(y_te, &pred_lg)?);
-    println!("  majority class ({maj})       {:.4}", accuracy(y_te, &pred_mj)?);
+    println!(
+        "  MLP (16,8)               {:.4}",
+        accuracy(y_te, &pred_nn)?
+    );
+    println!(
+        "  logistic regression      {:.4}",
+        accuracy(y_te, &pred_lg)?
+    );
+    println!(
+        "  majority class ({maj})       {:.4}",
+        accuracy(y_te, &pred_mj)?
+    );
     let cm = confusion_matrix(y_te, &pred_nn, 3)?;
     println!("\n  MLP confusion matrix (rows true, cols predicted; 0=down 1=flat 2=up)");
     for (r, row) in cm.iter().enumerate() {
@@ -221,8 +257,7 @@ fn run() -> Result<(), LobError> {
     }
 
     section("6. Does the signal survive costs?");
-    let (gross, net_pnl, n_trades) =
-        signal_pnl(&pred_nn, &fs.fwd_ret[te.clone()], &fs.spread[te])?;
+    let (gross, net_pnl, n_trades) = signal_pnl(&pred_nn, &fs.fwd_ret[te.clone()], &fs.spread[te])?;
     println!(
         "trading the MLP signal on the holdout ({n_trades} trades, mid-to-mid, half-spread cost per trade):"
     );

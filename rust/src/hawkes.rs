@@ -114,11 +114,7 @@ fn check_biv_params(mu: &[f64; 2], alpha: &[[f64; 2]; 2], beta: f64) -> Result<(
             "mu must be two positive finite values".to_string(),
         ));
     }
-    if alpha
-        .iter()
-        .flatten()
-        .any(|v| !v.is_finite() || *v < 0.0)
-    {
+    if alpha.iter().flatten().any(|v| !v.is_finite() || *v < 0.0) {
         return Err(LobError::InvalidInput(
             "alpha must be a 2x2 non-negative finite matrix".to_string(),
         ));
@@ -138,9 +134,7 @@ fn check_types(types: &[usize], n: usize) -> Result<()> {
         ));
     }
     if types.iter().any(|&k| k > 1) {
-        return Err(LobError::InvalidInput(
-            "types must be 0 or 1".to_string(),
-        ));
+        return Err(LobError::InvalidInput("types must be 0 or 1".to_string()));
     }
     Ok(())
 }
@@ -311,7 +305,13 @@ pub fn biv_loglik_brute(
 ///
 /// # Errors
 /// Same validation as [`uni_loglik`].
-pub fn uni_residuals(times: &[f64], t_end: f64, mu: f64, alpha: f64, beta: f64) -> Result<Vec<f64>> {
+pub fn uni_residuals(
+    times: &[f64],
+    t_end: f64,
+    mu: f64,
+    alpha: f64,
+    beta: f64,
+) -> Result<Vec<f64>> {
     check_times(times, t_end)?;
     check_uni_params(mu, alpha, beta)?;
     let t = times;
@@ -606,11 +606,7 @@ pub fn fit_uni(times: &[f64], t_end: f64) -> Result<HawkesUniFit> {
 /// As [`fit_uni`]; also if `maxiter == 0`.
 pub fn fit_uni_with(times: &[f64], t_end: f64, maxiter: usize) -> Result<HawkesUniFit> {
     let objective = uni_fit_objective(times, t_end)?;
-    let x0 = [
-        (0.5 * times.len() as f64 / t_end).ln(),
-        0.5_f64.ln(),
-        0.0,
-    ];
+    let x0 = [(0.5 * times.len() as f64 / t_end).ln(), 0.5_f64.ln(), 0.0];
     let res = nelder_mead(objective, &x0, DEFAULT_XATOL, DEFAULT_FATOL, maxiter)?;
     let (mu, alpha, beta) = (res.x[0].exp(), res.x[1].exp(), res.x[2].exp());
     let branching = alpha / beta;

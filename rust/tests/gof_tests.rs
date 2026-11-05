@@ -50,7 +50,10 @@ fn ks_pvalue_monotone_in_d() {
     for d in [0.05, 0.1, 0.2, 0.3, 0.5, 0.8] {
         let p = ks_pvalue(d, n).unwrap();
         assert!((0.0..=1.0).contains(&p));
-        assert!(p <= prev, "p must not increase with D: p({d}) = {p} > {prev}");
+        assert!(
+            p <= prev,
+            "p must not increase with D: p({d}) = {p} > {prev}"
+        );
         prev = p;
     }
     assert!(prev < 1e-9, "huge D is a certain rejection");

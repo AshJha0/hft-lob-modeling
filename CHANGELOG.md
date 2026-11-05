@@ -5,6 +5,8 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-05
+
 ### Added
 
 - `.gitattributes` keeping bundled data byte-exact on every platform.

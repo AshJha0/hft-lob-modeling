@@ -39,14 +39,21 @@ fn replay_invariants_and_size_conservation() {
         }
         // price sanity after every event: the book is never crossed
         if let (Some(b), Some(a)) = (book.best_bid(), book.best_ask()) {
-            assert!(b < a, "crossed book after event {}: bid {b} >= ask {a}", e.seq);
+            assert!(
+                b < a,
+                "crossed book after event {}: bid {b} >= ask {a}",
+                e.seq
+            );
         }
     }
     // every fill consumes a resting limit (maker side), so:
     // limit size in = taker-executed on arrival + cancelled + maker-filled + still resting
     let maker_filled: i64 = book.trades.iter().map(|f| f.size).sum();
     let resting = book.total_size(Side::Bid) + book.total_size(Side::Ask);
-    assert_eq!(total_limit, limit_taker + cancelled + maker_filled + resting);
+    assert_eq!(
+        total_limit,
+        limit_taker + cancelled + maker_filled + resting
+    );
     assert!(maker_filled > 0 && cancelled > 0);
 }
 
@@ -129,7 +136,10 @@ fn crossed_limit_executes_then_rests() {
     // buy limit at 102 crosses 101 but must not trade through to 103
     let (fills, rested) = b.limit(Side::Bid, 102.0, 8, 3).unwrap();
     assert_eq!(fills.len(), 1);
-    assert_eq!((fills[0].maker_id, fills[0].price, fills[0].size), (1, 101, 5));
+    assert_eq!(
+        (fills[0].maker_id, fills[0].price, fills[0].size),
+        (1, 101, 5)
+    );
     assert_eq!(rested, 3);
     assert_eq!(b.best_bid(), Some(102));
     assert_eq!(b.best_bid_size(), 3);
@@ -289,7 +299,14 @@ fn large_tick_counts() {
     assert!(f1.is_empty() && r1 == 1);
     assert_eq!(b.best_ask(), Some(6_000_000_000_000));
     let (f2, r2) = b.limit(Side::Bid, 60000.0, 1, 2).unwrap();
-    assert_eq!(f2, vec![Fill { maker_id: 1, price: 6_000_000_000_000, size: 1 }]);
+    assert_eq!(
+        f2,
+        vec![Fill {
+            maker_id: 1,
+            price: 6_000_000_000_000,
+            size: 1
+        }]
+    );
     assert_eq!(r2, 0);
     assert!(b.best_ask().is_none() && b.best_bid().is_none());
     assert!(b.limit(Side::Bid, 1e300, 1, 3).is_err()); // no saturation, no sweep
@@ -378,12 +395,26 @@ fn crossed_sell_limit_stops_at_its_price_and_price_improvement() {
     b.limit(Side::Bid, 100.0, 4, 1).unwrap();
     b.limit(Side::Bid, 99.0, 4, 2).unwrap();
     let (fills, rested) = b.limit(Side::Ask, 100.0, 10, 3).unwrap();
-    assert_eq!(fills, vec![Fill { maker_id: 1, price: 100, size: 4 }]);
+    assert_eq!(
+        fills,
+        vec![Fill {
+            maker_id: 1,
+            price: 100,
+            size: 4
+        }]
+    );
     assert_eq!(rested, 6);
     assert_eq!((b.best_ask(), b.best_bid()), (Some(100), Some(99)));
     assert_eq!(b.best_bid_size(), 4); // the 99 bid was never touched
     let (fills, rested) = b.limit(Side::Ask, 95.0, 2, 4).unwrap(); // executes at the resting 99
-    assert_eq!(fills, vec![Fill { maker_id: 2, price: 99, size: 2 }]);
+    assert_eq!(
+        fills,
+        vec![Fill {
+            maker_id: 2,
+            price: 99,
+            size: 2
+        }]
+    );
     assert_eq!(rested, 0);
 }
 
@@ -421,8 +452,14 @@ fn events_csv_robustness() {
     assert_eq!((ok[1].price, ok[1].side), (1001, Side::Ask));
     let crlf = body.replace('\n', "\r\n");
     assert_eq!(read_events_csv(&scratch("crlf.csv", &crlf)).unwrap(), ok);
-    assert_eq!(read_events_csv(&scratch("trail.csv", &format!("{body}\n\n"))).unwrap(), ok);
-    assert_eq!(read_events_csv(&scratch("noeol.csv", body.trim_end())).unwrap(), ok);
+    assert_eq!(
+        read_events_csv(&scratch("trail.csv", &format!("{body}\n\n"))).unwrap(),
+        ok
+    );
+    assert_eq!(
+        read_events_csv(&scratch("noeol.csv", body.trim_end())).unwrap(),
+        ok
+    );
     let bad = [
         ("comma.csv", format!("{body}3,M,B,0,2,0,\n")),
         ("float.csv", format!("{body}3,L,B,999.5,1,3\n")),
@@ -434,7 +471,10 @@ fn events_csv_robustness() {
             "blank.csv",
             "seq,type,side,price,size,order_id\n1,L,B,999,10,1\n\n2,L,S,1001,10,2\n".to_string(),
         ),
-        ("header.csv", "seq,side,type,price,size,order_id\n1,B,L,999,10,1\n".to_string()),
+        (
+            "header.csv",
+            "seq,side,type,price,size,order_id\n1,B,L,999,10,1\n".to_string(),
+        ),
         ("empty.csv", String::new()),
         ("big.csv", format!("{body}3,L,B,9223372036854775808,1,3\n")),
     ];
@@ -466,9 +506,18 @@ fn quoted(bid: i64, ask: i64) -> LimitOrderBook {
 
 #[test]
 fn mid_is_exact_sum_rounded_once() {
-    assert_eq!(quoted(5_000_000_000_000_000_000, 5_000_000_000_000_000_001).mid(), 5e18);
-    assert_eq!(quoted((1 << 53) + 1, (1 << 53) + 2).mid(), ((1i64 << 53) + 2) as f64);
-    assert_eq!(quoted(1 << 62, (1 << 62) + 1025).mid(), ((1i64 << 62) + 1024) as f64);
+    assert_eq!(
+        quoted(5_000_000_000_000_000_000, 5_000_000_000_000_000_001).mid(),
+        5e18
+    );
+    assert_eq!(
+        quoted((1 << 53) + 1, (1 << 53) + 2).mid(),
+        ((1i64 << 53) + 2) as f64
+    );
+    assert_eq!(
+        quoted(1 << 62, (1 << 62) + 1025).mid(),
+        ((1i64 << 62) + 1024) as f64
+    );
 }
 
 #[test]

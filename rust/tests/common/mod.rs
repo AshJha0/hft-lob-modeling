@@ -23,7 +23,12 @@ pub fn load_golden() -> HashMap<String, Value> {
         .as_array()
         .expect("cases array")
         .iter()
-        .map(|c| (c["name"].as_str().expect("case name").to_string(), c.clone()))
+        .map(|c| {
+            (
+                c["name"].as_str().expect("case name").to_string(),
+                c.clone(),
+            )
+        })
         .collect()
 }
 

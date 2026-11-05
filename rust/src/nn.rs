@@ -515,11 +515,7 @@ pub fn accuracy(y_true: &[usize], y_pred: &[usize]) -> Result<f64> {
             "y_true and y_pred must be equal-length non-empty arrays".to_string(),
         ));
     }
-    let matches = y_true
-        .iter()
-        .zip(y_pred)
-        .filter(|(a, b)| a == b)
-        .count();
+    let matches = y_true.iter().zip(y_pred).filter(|(a, b)| a == b).count();
     Ok(matches as f64 / y_true.len() as f64)
 }
 
@@ -581,9 +577,7 @@ pub fn majority_class(y: &[usize]) -> Result<usize> {
 /// a label outside `{0, 1, 2}`.
 pub fn signal_pnl(y_pred: &[usize], fwd_ret: &[f64], spread: &[f64]) -> Result<(f64, f64, usize)> {
     if y_pred.is_empty() {
-        return Err(LobError::InvalidInput(
-            "empty prediction array".to_string(),
-        ));
+        return Err(LobError::InvalidInput("empty prediction array".to_string()));
     }
     if y_pred.len() != fwd_ret.len() || y_pred.len() != spread.len() {
         return Err(LobError::InvalidInput(

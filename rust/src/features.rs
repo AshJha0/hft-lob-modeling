@@ -304,7 +304,10 @@ pub fn compute_features(states: &BookStates, cfg: &FeatureConfig) -> Result<Feat
         let mid_fwd = states.mid[i + cfg.horizon];
         let spread = states.spread[i];
         let (bd, ad) = (states.bid_depth_k[i], states.ask_depth_k[i]);
-        if !(mid_now.is_finite() && mid_past.is_finite() && mid_fwd.is_finite() && spread.is_finite())
+        if !(mid_now.is_finite()
+            && mid_past.is_finite()
+            && mid_fwd.is_finite()
+            && spread.is_finite())
         {
             continue;
         }
