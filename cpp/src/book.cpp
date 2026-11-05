@@ -281,6 +281,89 @@ std::int64_t LimitOrderBook::cancel(std::int64_t order_id) {
     return removed;
 }
 
+LimitOrderBook::Shrunk LimitOrderBook::shrink(std::int64_t order_id, std::int64_t qty,
+                                               const char* what) {
+    check_size(qty);
+    const auto it = orders_.find(order_id);
+    if (it == orders_.end()) {
+        throw std::invalid_argument(std::string(what) + " of unknown order_id " +
+                                    std::to_string(order_id));
+    }
+    const char side = it->second.first;
+    const std::int64_t ticks = it->second.second;
+    Side& levels = side == BUY ? bids_ : asks_;
+    Level& queue = levels[ticks];
+    auto qit = queue.begin();
+    while (qit->id != order_id) ++qit;
+    if (qty > qit->size) {
+        throw std::invalid_argument(std::string(what) + " of " + std::to_string(qty) +
+                                    " exceeds remaining size " + std::to_string(qit->size) +
+                                    " of order_id " + std::to_string(order_id));
+    }
+    qit->size -= qty;
+    const std::int64_t left = qit->size;
+    if (left == 0) {
+        queue.erase(qit);
+        orders_.erase(it);
+        if (queue.empty()) levels.erase(ticks);
+    }
+    (side == BUY ? bid_total_ : ask_total_) -= qty;
+    return Shrunk{side, ticks, left};
+}
+
+std::int64_t LimitOrderBook::reduce(std::int64_t order_id, std::int64_t by_size) {
+    const Shrunk s = shrink(order_id, by_size, "reduce");
+    if (record_trades_) {
+        log_.push_back(BookLogEntry{'R', s.side, s.ticks, by_size, order_id, 0, 0});
+    }
+    return s.left;
+}
+
+Fill LimitOrderBook::execute(std::int64_t order_id, std::int64_t size) {
+    const Shrunk s = shrink(order_id, size, "execute");
+    const Fill fill{order_id, s.ticks, size};
+    if (record_trades_) {
+        trades_.push_back(fill);
+        log_.push_back(BookLogEntry{'E', s.side, s.ticks, size, order_id, size, 0});
+    }
+    return fill;
+}
+
+std::pair<std::vector<Fill>, std::int64_t>
+LimitOrderBook::replace(std::int64_t order_id, std::int64_t new_id, double price,
+                        std::int64_t size) {
+    return replace_ticks(order_id, new_id, to_ticks(price), size);
+}
+
+std::pair<std::vector<Fill>, std::int64_t>
+LimitOrderBook::replace_ticks(std::int64_t order_id, std::int64_t new_id,
+                              std::int64_t price_ticks, std::int64_t size) {
+    check_size(size);
+    const std::int64_t ticks = check_ticks(price_ticks);
+    const auto it = orders_.find(order_id);
+    if (it == orders_.end()) {
+        throw std::invalid_argument("replace of unknown order_id " +
+                                    std::to_string(order_id));
+    }
+    if (new_id != order_id && orders_.count(new_id) > 0) {
+        throw std::invalid_argument("order_id " + std::to_string(new_id) +
+                                    " is already live in the book");
+    }
+    const char side = it->second.first;
+    const Level& queue = (side == BUY ? bids_ : asks_).at(it->second.second);
+    std::int64_t old_size = 0;
+    for (const Order& o : queue) {
+        if (o.id == order_id) old_size = o.size;
+    }
+    if (size > kMaxTicks - (total_size(side) - old_size)) {
+        throw std::invalid_argument("size " + std::to_string(size) +
+                                    " would take the side's total resting size "
+                                    "above kMaxTicks");
+    }
+    cancel(order_id);
+    return limit_ticks(side, ticks, size, new_id);
+}
+
 std::pair<std::vector<Fill>, std::int64_t>
 LimitOrderBook::market(char side, std::int64_t size) {
     check_side(side);

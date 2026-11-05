@@ -1,9 +1,14 @@
 package com.quant.lobmod;
 
+import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 
 /**
  * Event stream CSV i/o and deterministic book replay.
@@ -23,6 +28,8 @@ import java.util.List;
 public final class Replay {
 
     private static final String HEADER = "seq,type,side,price,size,order_id";
+    private static final String HEADER_V2 =
+            "seq,ts_ns,type,side,price,size,order_id,new_order_id";
 
     private Replay() {
     }
@@ -81,6 +88,90 @@ public final class Replay {
     }
 
     /**
+     * Reads a v2 event CSV, or a v1 file lifted with {@code tsNs = 0}; the
+     * header selects the schema.
+     *
+     * @throws IllegalArgumentException on a bad header or row
+     * @throws UncheckedIOException on i/o failure
+     */
+    public static List<EventV2> readEventsV2Csv(Path path) {
+        String first;
+        try (BufferedReader in = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            first = in.readLine();
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        List<EventV2> events = new ArrayList<>();
+        if (!HEADER_V2.equals(first)) {
+            for (Event e : readEventsCsv(path)) {
+                events.add(new EventV2(e.seq(), 0, e.etype(), e.side(), e.price(), e.size(),
+                        e.orderId(), 0));
+            }
+            return events;
+        }
+        List<String> lines = Csv.readCsvLines(path, HEADER_V2);
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String context = "event row " + (i + 1);
+            String[] parts = line.split(",", -1);
+            if (parts.length != 8) {
+                throw new IllegalArgumentException("malformed " + context
+                        + ": expected 8 fields, got " + parts.length + ": '" + line + "'");
+            }
+            long tsNs = Csv.parseInt64Strict(parts[1], context);
+            if (tsNs < 0) {
+                throw new IllegalArgumentException("negative ts_ns in " + context);
+            }
+            events.add(new EventV2(
+                    Csv.parseInt64Strict(parts[0], context),
+                    tsNs,
+                    parseCode(parts[2], "LCMRUE", "event type", context),
+                    parseCode(parts[3], "BS", "side", context),
+                    Csv.parseInt64Strict(parts[4], context),
+                    Csv.parseInt64Strict(parts[5], context),
+                    Csv.parseInt64Strict(parts[6], context),
+                    Csv.parseInt64Strict(parts[7], context)));
+        }
+        return events;
+    }
+
+    /**
+     * Writes schema v2 events ({@code \n} line endings).
+     *
+     * @throws UncheckedIOException on i/o failure
+     */
+    public static void writeEventsV2Csv(Path path, List<EventV2> events) {
+        StringBuilder sb = new StringBuilder(48 * (events.size() + 1));
+        sb.append(HEADER_V2).append('\n');
+        for (EventV2 e : events) {
+            sb.append(e.seq()).append(',').append(e.tsNs()).append(',').append(e.etype())
+                    .append(',').append(e.side()).append(',').append(e.price()).append(',')
+                    .append(e.size()).append(',').append(e.orderId()).append(',')
+                    .append(e.newOrderId()).append('\n');
+        }
+        Csv.writeText(path, sb.toString());
+    }
+
+    /**
+     * Applies one schema v2 event to the book.
+     *
+     * @throws IllegalArgumentException as {@link #applyEvent}
+     */
+    public static void applyEventV2(LimitOrderBook book, EventV2 event) {
+        switch (event.etype()) {
+            case 'L' -> book.limitTicks(event.side(), event.price(), event.size(), event.orderId());
+            case 'C' -> book.cancel(event.orderId());
+            case 'M' -> book.market(event.side(), event.size());
+            case 'R' -> book.reduce(event.orderId(), event.size());
+            case 'U' -> book.replaceTicks(event.orderId(), event.newOrderId(), event.price(),
+                    event.size());
+            case 'E' -> book.execute(event.orderId(), event.size());
+            default -> throw new IllegalArgumentException(
+                    "unknown event type '" + event.etype() + "'");
+        }
+    }
+
+    /**
      * Applies one event to the book.
      *
      * @throws IllegalArgumentException on an unknown event type or any
@@ -109,6 +200,16 @@ public final class Replay {
      *     is not positive, or an event is invalid
      */
     public static BookStates replay(List<Event> events, int depthK) {
+        return replayWith(events, depthK, Replay::applyEvent);
+    }
+
+    /** As {@link #replay(List, int)}, for schema v2 events. */
+    public static BookStates replayV2(List<EventV2> events, int depthK) {
+        return replayWith(events, depthK, Replay::applyEventV2);
+    }
+
+    private static <E> BookStates replayWith(List<E> events, int depthK,
+            BiConsumer<LimitOrderBook, E> apply) {
         if (depthK <= 0) {
             throw new IllegalArgumentException("depth_k must be a positive integer, got " + depthK);
         }
@@ -121,7 +222,7 @@ public final class Replay {
                 new double[n], new double[n]);
         LimitOrderBook book = new LimitOrderBook(1.0, false);
         for (int i = 0; i < n; i++) {
-            applyEvent(book, events.get(i));
+            apply.accept(book, events.get(i));
             st.bestBid()[i] = book.bestBid().isPresent() ? book.bestBid().getAsLong() : Double.NaN;
             st.bestAsk()[i] = book.bestAsk().isPresent() ? book.bestAsk().getAsLong() : Double.NaN;
             st.bidSize()[i] = book.bestBidSize();

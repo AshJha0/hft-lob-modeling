@@ -21,6 +21,7 @@
 pub mod book;
 pub mod csv;
 pub mod error;
+pub mod fast_book;
 pub mod features;
 pub mod gof;
 pub mod hawkes;

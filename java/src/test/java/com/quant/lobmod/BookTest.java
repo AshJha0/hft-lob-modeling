@@ -557,4 +557,157 @@ public class BookTest {
         }, new double[] {-1.2, 1.0, 0.7, 1.3});
         assertEquals(308, r.nIter());
     }
+
+    // ---------------------------------------- L3 operations and schema v2
+
+    private static LimitOrderBook threeBids() {
+        LimitOrderBook b = new LimitOrderBook(1.0);
+        b.limit('B', 100, 10, 1);
+        b.limit('B', 100, 20, 2);
+        b.limit('B', 100, 30, 3);
+        return b;
+    }
+
+    private static long[] makers(List<Fill> fills) {
+        return fills.stream().mapToLong(Fill::makerId).toArray();
+    }
+
+    @Test
+    public void reduceKeepsPriorityAndFullReduceRemoves() {
+        LimitOrderBook b = threeBids();
+        assertEquals(6, b.reduce(1, 4));
+        assertEquals(56, b.totalSize('B'));
+        assertArrayEquals(new long[] {1, 2}, makers(b.market('S', 7).fills()));
+        assertEquals(0, b.reduce(2, 19));
+        assertFalse(b.hasOrder(2));
+        b.reduce(3, 30);
+        assertFalse(b.bestBid().isPresent());
+        assertEquals(0, b.totalSize('B'));
+    }
+
+    @Test
+    public void executeNamedOrderOutOfQueueOrder() {
+        LimitOrderBook b = threeBids();
+        Fill f = b.execute(2, 5);
+        assertEquals(new Fill(2, 100, 5), f);
+        assertEquals(List.of(f), b.trades());
+        assertEquals(55, b.totalSize('B'));
+        b.execute(2, 15);
+        assertFalse(b.hasOrder(2));
+        assertArrayEquals(new long[] {1, 3}, makers(b.market('S', 40).fills()));
+    }
+
+    @Test
+    public void replaceLosesPriorityAndMayReuseItsId() {
+        LimitOrderBook b = threeBids();
+        assertEquals(10, b.replace(1, 1, 100, 10).remainder());
+        assertEquals(20, b.replaceTicks(2, 9, 100, 20).remainder());
+        assertFalse(b.hasOrder(2));
+        assertArrayEquals(new long[] {3, 1, 9}, makers(b.market('S', 60).fills()));
+    }
+
+    @Test
+    public void crossingReplaceExecutes() {
+        LimitOrderBook b = new LimitOrderBook(1.0);
+        b.limit('S', 101, 5, 1);
+        b.limit('B', 99, 8, 2);
+        LimitOrderBook.ExecResult r = b.replace(2, 3, 101, 8);
+        assertArrayEquals(new long[] {1}, makers(r.fills()));
+        assertEquals(3, r.remainder());
+        assertEquals(101, b.bestBid().getAsLong());
+        assertEquals(0, b.totalSize('S'));
+    }
+
+    @Test
+    public void l3ErrorsLeaveTheBookUnchanged() {
+        LimitOrderBook b = threeBids();
+        Class<IllegalArgumentException> bad = IllegalArgumentException.class;
+        assertThrows(bad, () -> b.reduce(99, 1));
+        assertThrows(bad, () -> b.reduce(1, 11));
+        assertThrows(bad, () -> b.reduce(1, 0));
+        assertThrows(bad, () -> b.execute(99, 1));
+        assertThrows(bad, () -> b.execute(1, 11));
+        assertThrows(bad, () -> b.execute(1, -1));
+        assertThrows(bad, () -> b.replace(99, 5, 100, 1));
+        assertThrows(bad, () -> b.replace(1, 2, 100, 1));
+        assertThrows(bad, () -> b.replace(1, 5, 100.5, 1));
+        assertThrows(bad, () -> b.replace(1, 5, 100, 0));
+        assertThrows(bad, () -> b.replaceTicks(1, 5, 0, 1));
+        assertEquals(60, b.totalSize('B'));
+        assertEquals(3, b.nOrders('B'));
+        assertArrayEquals(new long[] {1, 2, 3}, makers(b.market('S', 60).fills()));
+    }
+
+    @Test
+    public void replaceCountsCapacityWithTheOldOrderGone() {
+        LimitOrderBook b = new LimitOrderBook(1.0);
+        b.limitTicks('B', 100, LimitOrderBook.MAX_TICKS, 1);
+        b.replaceTicks(1, 2, 90, LimitOrderBook.MAX_TICKS);
+        assertEquals(LimitOrderBook.MAX_TICKS, b.totalSize('B'));
+        b.reduce(2, 1);
+        b.limitTicks('B', 80, 1, 3);
+        assertThrows(IllegalArgumentException.class, () -> b.replaceTicks(3, 4, 80, 2));
+        assertEquals(LimitOrderBook.MAX_TICKS, b.totalSize('B'));
+        assertTrue(b.hasOrder(3));
+    }
+
+    private static java.util.Map<String, long[]> expectedV2() throws IOException {
+        java.util.Map<String, long[]> out = new java.util.HashMap<>();
+        List<String> lines = Files.readAllLines(TestData.DATA.resolve("lob_events_v2_expected.csv"));
+        for (String line : lines.subList(1, lines.size())) {
+            String[] kv = line.split(",", 2);
+            out.put(kv[0], java.util.Arrays.stream(kv[1].split(" "))
+                    .mapToLong(Long::parseLong).toArray());
+        }
+        return out;
+    }
+
+    @Test
+    public void v2FixtureReproducesExpectedBook() throws IOException {
+        List<EventV2> events = Replay.readEventsV2Csv(TestData.DATA.resolve("lob_events_v2.csv"));
+        java.util.Map<String, long[]> want = expectedV2();
+        LimitOrderBook b = new LimitOrderBook(1.0);
+        for (EventV2 e : events) {
+            Replay.applyEventV2(b, e);
+        }
+        assertEquals(want.get("best_bid")[0], b.bestBid().getAsLong());
+        assertEquals(want.get("best_ask")[0], b.bestAsk().getAsLong());
+        assertEquals(want.get("best_bid_size")[0], b.bestBidSize());
+        assertEquals(want.get("best_ask_size")[0], b.bestAskSize());
+        assertEquals(want.get("total_bid")[0], b.totalSize('B'));
+        assertEquals(want.get("total_ask")[0], b.totalSize('S'));
+        assertArrayEquals(want.get("order_ids_bid"), b.orderIds('B'));
+        assertArrayEquals(want.get("order_ids_ask"), b.orderIds('S'));
+        assertArrayEquals(want.get("trades"), b.trades().stream()
+                .flatMapToLong(f -> java.util.stream.LongStream.of(f.makerId(), f.price(), f.size()))
+                .toArray());
+        assertEquals(want.get("last_ts_ns")[0], events.get(events.size() - 1).tsNs());
+        BookStates st = Replay.replayV2(events, 3);
+        assertEquals(17, st.size());
+        assertEquals(999.5, st.mid()[16], 0.0);
+    }
+
+    @Test
+    public void v2ReaderLiftsV1AndRoundTrips() throws IOException {
+        List<EventV2> lifted = Replay.readEventsV2Csv(TestData.DATA.resolve("lob_events.csv"));
+        assertEquals(5000, lifted.size());
+        assertEquals(0, lifted.get(0).tsNs());
+        List<EventV2> events = Replay.readEventsV2Csv(TestData.DATA.resolve("lob_events_v2.csv"));
+        Path path = Files.createTempFile("lobmod_v2", ".csv");
+        Replay.writeEventsV2Csv(path, events);
+        assertEquals(events, Replay.readEventsV2Csv(path));
+        Files.delete(path);
+    }
+
+    @Test
+    public void v2ReaderRejectsBadRows() throws IOException {
+        Path path = Files.createTempFile("lobmod_v2_bad", ".csv");
+        for (String row : new String[] {"1,-1,L,B,100,1,1,0", "1,0,Z,B,100,1,1,0",
+            "1,0,L,B,100,1,1", "1,0,L,B,100,1,1,0,"}) {
+            Files.writeString(path,
+                    "seq,ts_ns,type,side,price,size,order_id,new_order_id\n" + row + "\n");
+            assertThrows(IllegalArgumentException.class, () -> Replay.readEventsV2Csv(path));
+        }
+        Files.delete(path);
+    }
 }

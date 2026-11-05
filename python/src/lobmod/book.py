@@ -15,6 +15,12 @@ Model
     - **market order**: walks the opposite side level by level, filling FIFO
       within each level; if the book runs out, the unfilled remainder is
       *reported*, never an error.
+* Three operations on a named resting order, as carried by L3 feeds:
+    - **reduce**: takes size off an order, which keeps its queue position.
+    - **replace**: swaps an order for a new id, price and size at the tail of
+      the new level, so priority is lost; a crossing replace executes.
+    - **execute**: fills a named order at its own price, partly or fully,
+      with no aggressor walking the book.
 * Derived quantities: best bid/ask, mid, spread, microprice
   ``(q_a * P_b + q_b * P_a) / (q_a + q_b)`` with best-level sizes ``q_b, q_a``
   (size-weighted mid tilted toward the thin side), and summed depth over the
@@ -392,3 +398,108 @@ class LimitOrderBook:
         if self.record_trades:
             self.log.append(("M", side, 0, size, 0, size - unfilled, unfilled))
         return fills, unfilled
+
+    def _shrink(self, order_id: int, qty: int, what: str) -> Tuple[str, int, int]:
+        """Take ``qty`` off a live order in place; returns (side, ticks, left).
+
+        The order keeps its queue position; at zero it leaves the book.  All
+        validation happens before any mutation.
+        """
+        qty = self._check_size(qty)
+        order_id = as_int("order_id", order_id)
+        if order_id not in self._orders:
+            raise ValueError(f"{what} of unknown order_id {order_id}")
+        side, ticks = self._orders[order_id]
+        levels = self._bids if side == self.BUY else self._asks
+        queue = levels[ticks]
+        index = next(i for i, o in enumerate(queue) if o[0] == order_id)
+        order = queue[index]
+        if qty > order[1]:
+            raise ValueError(
+                f"{what} of {qty} exceeds remaining size {order[1]} of order_id {order_id}"
+            )
+        order[1] -= qty
+        left = order[1]
+        if left == 0:
+            del queue[index]
+            del self._orders[order_id]
+            if not queue:
+                del levels[ticks]
+        self._resting[side] -= qty
+        return side, ticks, left
+
+    def reduce(self, order_id: int, by_size: int) -> int:
+        """Take ``by_size`` off a resting order, keeping its queue position.
+
+        Reducing by the whole remaining size removes the order.
+
+        Returns:
+            The size left resting (0 if the order left the book).
+
+        Raises:
+            ValueError: unknown id, bad size, or ``by_size`` above the
+                remaining size; the book is unchanged.
+        """
+        side, ticks, left = self._shrink(order_id, by_size, "reduce")
+        if self.record_trades:
+            self.log.append(("R", side, ticks, by_size, order_id, 0, 0))
+        return left
+
+    def execute(self, order_id: int, size: int) -> Fill:
+        """Fill a named resting order at its own price, partly or fully.
+
+        A partial execution keeps the order's queue position, even if orders
+        ahead of it remain (L3 feeds name the order that traded).
+
+        Returns:
+            The :class:`Fill`, also appended to :attr:`trades`.
+
+        Raises:
+            ValueError: unknown id, bad size, or ``size`` above the remaining
+                size; the book is unchanged.
+        """
+        side, ticks, _ = self._shrink(order_id, size, "execute")
+        fill = Fill(maker_id=order_id, price=ticks, size=size)
+        if self.record_trades:
+            self.trades.append(fill)
+            self.log.append(("E", side, ticks, size, order_id, size, 0))
+        return fill
+
+    def replace(self, order_id: int, new_id: int, price: float, size: int) -> Tuple[List[Fill], int]:
+        """Replace a resting order, priced in currency units; see :meth:`replace_ticks`."""
+        return self.replace_ticks(order_id, new_id, self._to_ticks(price), size)
+
+    def replace_ticks(self, order_id: int, new_id: int, price_ticks: int, size: int) -> Tuple[List[Fill], int]:
+        """Swap a resting order for ``new_id`` on the same side, losing priority.
+
+        Equivalent to :meth:`cancel` then :meth:`limit_ticks`, and logged as
+        those two entries, but every check runs first, so a rejected replace
+        leaves the book unchanged.  ``new_id`` may equal ``order_id``.  The
+        new order joins the tail of its level even when price and size are
+        unchanged, and a crossing price executes as a limit add does.
+
+        Returns:
+            (fills, rested_size), as :meth:`limit_ticks`.
+
+        Raises:
+            ValueError: unknown ``order_id``, ``new_id`` live on another
+                order, bad price or size, or a size that would take the side
+                above ``MAX_TICKS`` once the old order has gone.
+        """
+        order_id = as_int("order_id", order_id)
+        new_id = as_int("new_id", new_id)
+        size = self._check_size(size)
+        ticks = self._check_ticks(price_ticks)
+        if order_id not in self._orders:
+            raise ValueError(f"replace of unknown order_id {order_id}")
+        if new_id != order_id and new_id in self._orders:
+            raise ValueError(f"order_id {new_id} is already live in the book")
+        side, old_ticks = self._orders[order_id]
+        levels = self._bids if side == self.BUY else self._asks
+        old_size = next(o[1] for o in levels[old_ticks] if o[0] == order_id)
+        if size > MAX_TICKS - (self._resting[side] - old_size):
+            raise ValueError(
+                f"size {size} would take side {side} total resting size above MAX_TICKS"
+            )
+        self.cancel(order_id)
+        return self.limit_ticks(side, ticks, size, new_id)

@@ -558,4 +558,163 @@ TEST(Edge, Rosenbrock4dIterationCountIsPinned) {
     EXPECT_EQ(lobmod::nelder_mead(rosen, {-1.2, 1.0, 0.7, 1.3}).n_iter, 308);
 }
 
+// ------------------------------------------------- L3 operations and schema v2
+
+LimitOrderBook three_bids() {
+    LimitOrderBook b(1.0);
+    b.limit('B', 100, 10, 1);
+    b.limit('B', 100, 20, 2);
+    b.limit('B', 100, 30, 3);
+    return b;
+}
+
+std::vector<std::int64_t> makers(const std::vector<lobmod::Fill>& fills) {
+    std::vector<std::int64_t> ids;
+    for (const auto& f : fills) ids.push_back(f.maker_id);
+    return ids;
+}
+
+using Ids = std::vector<std::int64_t>;
+
+TEST(BookL3, ReduceKeepsPriorityAndFullReduceRemoves) {
+    LimitOrderBook b = three_bids();
+    EXPECT_EQ(b.reduce(1, 4), 6);
+    EXPECT_EQ(b.total_size('B'), 56);
+    EXPECT_EQ(makers(b.market('S', 7).first), (Ids{1, 2}));
+    EXPECT_EQ(b.reduce(2, 19), 0);
+    EXPECT_FALSE(b.has_order(2));
+    b.reduce(3, 30);
+    EXPECT_FALSE(b.best_bid().has_value());
+    EXPECT_EQ(b.total_size('B'), 0);
+}
+
+TEST(BookL3, ExecuteNamedOrderOutOfQueueOrder) {
+    LimitOrderBook b = three_bids();
+    const lobmod::Fill f = b.execute(2, 5);
+    EXPECT_EQ(f.maker_id, 2);
+    EXPECT_EQ(f.price, 100);
+    EXPECT_EQ(f.size, 5);
+    EXPECT_EQ(b.trades().size(), 1u);
+    EXPECT_EQ(b.total_size('B'), 55);
+    b.execute(2, 15);
+    EXPECT_FALSE(b.has_order(2));
+    EXPECT_EQ(makers(b.market('S', 40).first), (Ids{1, 3}));
+}
+
+TEST(BookL3, ReplaceLosesPriorityAndMayReuseItsId) {
+    LimitOrderBook b = three_bids();
+    EXPECT_EQ(b.replace(1, 1, 100.0, 10).second, 10);
+    EXPECT_EQ(b.replace_ticks(2, 9, 100, 20).second, 20);
+    EXPECT_FALSE(b.has_order(2));
+    EXPECT_EQ(makers(b.market('S', 60).first), (Ids{3, 1, 9}));
+}
+
+TEST(BookL3, CrossingReplaceExecutes) {
+    LimitOrderBook b(1.0);
+    b.limit('S', 101, 5, 1);
+    b.limit('B', 99, 8, 2);
+    const auto [fills, rested] = b.replace(2, 3, 101.0, 8);
+    EXPECT_EQ(makers(fills), (Ids{1}));
+    EXPECT_EQ(rested, 3);
+    EXPECT_EQ(*b.best_bid(), 101);
+    EXPECT_EQ(b.total_size('S'), 0);
+}
+
+TEST(BookL3, ErrorsLeaveTheBookUnchanged) {
+    LimitOrderBook b = three_bids();
+    EXPECT_THROW(b.reduce(99, 1), std::invalid_argument);
+    EXPECT_THROW(b.reduce(1, 11), std::invalid_argument);
+    EXPECT_THROW(b.reduce(1, 0), std::invalid_argument);
+    EXPECT_THROW(b.execute(99, 1), std::invalid_argument);
+    EXPECT_THROW(b.execute(1, 11), std::invalid_argument);
+    EXPECT_THROW(b.execute(1, -1), std::invalid_argument);
+    EXPECT_THROW(b.replace(99, 5, 100.0, 1), std::invalid_argument);
+    EXPECT_THROW(b.replace(1, 2, 100.0, 1), std::invalid_argument);
+    EXPECT_THROW(b.replace(1, 5, 100.5, 1), std::invalid_argument);
+    EXPECT_THROW(b.replace(1, 5, 100.0, 0), std::invalid_argument);
+    EXPECT_THROW(b.replace_ticks(1, 5, 0, 1), std::invalid_argument);
+    EXPECT_EQ(b.total_size('B'), 60);
+    EXPECT_EQ(b.n_orders('B'), 3);
+    EXPECT_EQ(makers(b.market('S', 60).first), (Ids{1, 2, 3}));
+}
+
+TEST(BookL3, ReplaceCountsCapacityWithTheOldOrderGone) {
+    LimitOrderBook b(1.0);
+    b.limit_ticks('B', 100, lobmod::kMaxTicks, 1);
+    b.replace_ticks(1, 2, 90, lobmod::kMaxTicks);
+    EXPECT_EQ(b.total_size('B'), lobmod::kMaxTicks);
+    b.reduce(2, 1);
+    b.limit_ticks('B', 80, 1, 3);
+    EXPECT_THROW(b.replace_ticks(3, 4, 80, 2), std::invalid_argument);
+    EXPECT_EQ(b.total_size('B'), lobmod::kMaxTicks);
+    EXPECT_TRUE(b.has_order(3));
+}
+
+std::map<std::string, Ids> expected_v2() {
+    std::ifstream in(testdata::data_dir() + "/lob_events_v2_expected.csv");
+    std::map<std::string, Ids> out;
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+        const auto comma = line.find(',');
+        Ids values;
+        std::size_t pos = comma + 1;
+        while (pos < line.size()) {
+            std::size_t used = 0;
+            values.push_back(std::stoll(line.substr(pos), &used));
+            pos += used + 1;
+        }
+        out[line.substr(0, comma)] = values;
+    }
+    return out;
+}
+
+TEST(SchemaV2, FixtureReproducesExpectedBook) {
+    const auto events = lobmod::read_events_v2_csv(testdata::data_dir() + "/lob_events_v2.csv");
+    auto want = expected_v2();
+    LimitOrderBook b(1.0);
+    for (const auto& e : events) lobmod::apply_event_v2(b, e);
+    EXPECT_EQ(*b.best_bid(), want["best_bid"][0]);
+    EXPECT_EQ(*b.best_ask(), want["best_ask"][0]);
+    EXPECT_EQ(b.best_bid_size(), want["best_bid_size"][0]);
+    EXPECT_EQ(b.best_ask_size(), want["best_ask_size"][0]);
+    EXPECT_EQ(b.total_size('B'), want["total_bid"][0]);
+    EXPECT_EQ(b.total_size('S'), want["total_ask"][0]);
+    EXPECT_EQ(b.order_ids('B'), want["order_ids_bid"]);
+    EXPECT_EQ(b.order_ids('S'), want["order_ids_ask"]);
+    Ids trades;
+    for (const auto& f : b.trades()) {
+        trades.push_back(f.maker_id);
+        trades.push_back(f.price);
+        trades.push_back(f.size);
+    }
+    EXPECT_EQ(trades, want["trades"]);
+    EXPECT_EQ(events.back().ts_ns, want["last_ts_ns"][0]);
+    const auto st = lobmod::replay_v2(events);
+    EXPECT_EQ(st.size(), 17u);
+    EXPECT_EQ(st.mid.back(), 999.5);
+}
+
+TEST(SchemaV2, ReaderLiftsV1AndRoundTrips) {
+    const auto lifted = lobmod::read_events_v2_csv(testdata::data_dir() + "/lob_events.csv");
+    EXPECT_EQ(lifted.size(), 5000u);
+    EXPECT_EQ(lifted[0].ts_ns, 0);
+    const auto events = lobmod::read_events_v2_csv(testdata::data_dir() + "/lob_events_v2.csv");
+    const std::string path = scratch("v2_roundtrip.csv", "");
+    lobmod::write_events_v2_csv(path, events);
+    const auto back = lobmod::read_events_v2_csv(path);
+    EXPECT_EQ(back.size(), events.size());
+    EXPECT_EQ(back.back().new_order_id, 11);
+    EXPECT_EQ(back.back().ts_ns, events.back().ts_ns);
+}
+
+TEST(SchemaV2, ReaderRejectsBadRows) {
+    const std::string header = "seq,ts_ns,type,side,price,size,order_id,new_order_id\n";
+    for (const char* row : {"1,-1,L,B,100,1,1,0", "1,0,Z,B,100,1,1,0", "1,0,L,B,100,1,1",
+                            "1,0,L,B,100,1,1,0,"}) {
+        const std::string path = scratch("v2_bad.csv", header + row + "\n");
+        EXPECT_THROW(lobmod::read_events_v2_csv(path), std::invalid_argument);
+    }
+}
+
 } // namespace

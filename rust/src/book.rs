@@ -13,6 +13,11 @@
 //!   - **market order**: walks the opposite side level by level, filling FIFO
 //!     within each level; if the book runs out, the unfilled remainder is
 //!     *reported*, never an error.
+//! * Three operations on a named resting order, as carried by L3 feeds:
+//!   - **reduce**: takes size off an order, which keeps its queue position.
+//!   - **replace**: swaps an order for a new id, price and size at the tail of
+//!     the new level, so priority is lost; a crossing replace executes.
+//!   - **execute**: fills a named order at its own price, partly or fully.
 //! * Derived quantities: best bid/ask, mid, spread, microprice
 //!   `(q_a * P_b + q_b * P_a) / (q_a + q_b)` with best-level sizes `q_b, q_a`
 //!   (size-weighted mid tilted toward the thin side), and summed depth over
@@ -328,7 +333,12 @@ impl LimitOrderBook {
     /// `limit_ticks` bounds acceptable prices (`None` = market order, walks
     /// everything).  Consumes levels best-first and orders FIFO within a
     /// level.  Returns (fills, unfilled remainder).
-    fn execute(&mut self, side: Side, size: i64, limit_ticks: Option<i64>) -> (Vec<Fill>, i64) {
+    fn match_incoming(
+        &mut self,
+        side: Side,
+        size: i64,
+        limit_ticks: Option<i64>,
+    ) -> (Vec<Fill>, i64) {
         let mut fills: Vec<Fill> = Vec::new();
         let mut remaining = size;
         while remaining > 0 {
@@ -432,7 +442,7 @@ impl LimitOrderBook {
                 side.code()
             )));
         }
-        let (fills, remaining) = self.execute(side, size, Some(ticks));
+        let (fills, remaining) = self.match_incoming(side, size, Some(ticks));
         if remaining > 0 {
             let levels = match side {
                 Side::Bid => &mut self.bids,
@@ -480,6 +490,134 @@ impl LimitOrderBook {
         Ok(removed)
     }
 
+    /// Take `qty` off a live order in place; returns (ticks, size left).
+    /// All validation happens before any mutation.
+    fn shrink(&mut self, order_id: i64, qty: i64, what: &str) -> Result<(i64, i64)> {
+        Self::check_size(qty)?;
+        let Some(&(side, ticks)) = self.orders.get(&order_id) else {
+            return Err(LobError::UnknownOrder(order_id));
+        };
+        let levels = match side {
+            Side::Bid => &mut self.bids,
+            Side::Ask => &mut self.asks,
+        };
+        let queue = levels.get_mut(&ticks).expect("level of a live order");
+        let pos = queue
+            .iter()
+            .position(|o| o.0 == order_id)
+            .expect("live order is queued");
+        if qty > queue[pos].1 {
+            return Err(LobError::InvalidInput(format!(
+                "{what} of {qty} exceeds remaining size {} of order_id {order_id}",
+                queue[pos].1
+            )));
+        }
+        queue[pos].1 -= qty;
+        let left = queue[pos].1;
+        if left == 0 {
+            queue.remove(pos);
+            if queue.is_empty() {
+                levels.remove(&ticks);
+            }
+            self.orders.remove(&order_id);
+        }
+        match side {
+            Side::Bid => self.bid_total -= qty,
+            Side::Ask => self.ask_total -= qty,
+        }
+        Ok((ticks, left))
+    }
+
+    /// Take `by_size` off a resting order, keeping its queue position; the
+    /// whole remaining size removes it.  Returns the size left resting.
+    ///
+    /// # Errors
+    /// [`LobError::UnknownOrder`] on an unknown id; [`LobError::InvalidInput`]
+    /// on a bad size or `by_size` above the remaining size (book unchanged).
+    pub fn reduce(&mut self, order_id: i64, by_size: i64) -> Result<i64> {
+        Ok(self.shrink(order_id, by_size, "reduce")?.1)
+    }
+
+    /// Fill a named resting order at its own price, partly or fully, keeping
+    /// its queue position on a partial fill.  Returns the [`Fill`], also
+    /// recorded in `trades`.
+    ///
+    /// # Errors
+    /// As [`LimitOrderBook::reduce`].
+    pub fn execute(&mut self, order_id: i64, size: i64) -> Result<Fill> {
+        let (ticks, _) = self.shrink(order_id, size, "execute")?;
+        let fill = Fill {
+            maker_id: order_id,
+            price: ticks,
+            size,
+        };
+        if self.record_trades {
+            self.trades.push(fill);
+        }
+        Ok(fill)
+    }
+
+    /// [`LimitOrderBook::replace_ticks`] priced in currency units.
+    ///
+    /// # Errors
+    /// As [`LimitOrderBook::replace_ticks`], plus the price rules of
+    /// [`LimitOrderBook::limit`].
+    pub fn replace(
+        &mut self,
+        order_id: i64,
+        new_id: i64,
+        price: f64,
+        size: i64,
+    ) -> Result<(Vec<Fill>, i64)> {
+        let ticks = self.to_ticks(price)?;
+        self.replace_ticks(order_id, new_id, ticks, size)
+    }
+
+    /// Swap a resting order for `new_id` on the same side at the tail of the
+    /// new level, losing priority.  Equals cancel then
+    /// [`LimitOrderBook::limit_ticks`], but every check runs first; a crossing
+    /// price executes.  `new_id` may equal `order_id`.
+    ///
+    /// # Errors
+    /// [`LobError::UnknownOrder`] on an unknown `order_id`;
+    /// [`LobError::InvalidInput`] if `new_id` is live on another order, on a
+    /// bad price or size, or a size taking the side above `MAX_TICKS` once
+    /// the old order has gone (book unchanged).
+    pub fn replace_ticks(
+        &mut self,
+        order_id: i64,
+        new_id: i64,
+        price_ticks: i64,
+        size: i64,
+    ) -> Result<(Vec<Fill>, i64)> {
+        Self::check_size(size)?;
+        let ticks = Self::check_ticks(price_ticks)?;
+        let Some(&(side, old_ticks)) = self.orders.get(&order_id) else {
+            return Err(LobError::UnknownOrder(order_id));
+        };
+        if new_id != order_id && self.orders.contains_key(&new_id) {
+            return Err(LobError::InvalidInput(format!(
+                "order_id {new_id} is already live in the book"
+            )));
+        }
+        let levels = match side {
+            Side::Bid => &self.bids,
+            Side::Ask => &self.asks,
+        };
+        let old_size = levels[&old_ticks]
+            .iter()
+            .find(|o| o.0 == order_id)
+            .map_or(0, |o| o.1);
+        if size > MAX_TICKS - (self.total_size(side) - old_size) {
+            return Err(LobError::InvalidInput(format!(
+                "size {size} would take side {} total resting size above MAX_TICKS",
+                side.code()
+            )));
+        }
+        self.cancel(order_id)?;
+        self.limit_ticks(side, ticks, size, new_id)
+    }
+
     /// Submit a market order that walks the opposite side of the book.
     ///
     /// A market order larger than the total opposite depth fills what is
@@ -492,6 +630,6 @@ impl LimitOrderBook {
     /// [`LobError::InvalidInput`] on non-positive `size`.
     pub fn market(&mut self, side: Side, size: i64) -> Result<(Vec<Fill>, i64)> {
         Self::check_size(size)?;
-        Ok(self.execute(side, size, None))
+        Ok(self.match_incoming(side, size, None))
     }
 }

@@ -51,3 +51,5 @@ target_compile_definitions(lobmod_tests PRIVATE LOBMOD_DATA_DIR="${LOBMOD_DATA_D
 
 include(GoogleTest)
 add_test(NAME lobmod_tests COMMAND lobmod_tests)
+
+add_subdirectory(fast)

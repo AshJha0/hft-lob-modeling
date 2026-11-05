@@ -483,3 +483,143 @@ def test_csv_strips_exactly_one_carriage_return(tmp_path):
         read_csv_lines(str(p), "t")
     p.write_bytes(b"t\n1\r\r\n")
     assert read_csv_lines(str(p), "t") == ["1\r"]  # field parsers then reject it
+
+
+# ------------------------------------------------- L3 operations and schema v2
+
+
+def three_bids():
+    b = LimitOrderBook(tick_size=1.0)
+    for oid, size in ((1, 10), (2, 20), (3, 30)):
+        b.limit("B", 100, size, oid)
+    return b
+
+
+def test_reduce_keeps_priority_and_full_reduce_removes():
+    b = three_bids()
+    assert b.reduce(1, 4) == 6
+    assert b.total_size("B") == 56
+    assert [f.maker_id for f in b.market("S", 7)[0]] == [1, 2]
+    assert b.reduce(2, 19) == 0
+    assert not b.has_order(2)
+    b.reduce(3, 30)
+    assert b.best_bid() is None and b.total_size("B") == 0
+
+
+def test_execute_named_order_at_its_price_out_of_queue_order():
+    b = three_bids()
+    fill = b.execute(2, 5)
+    assert (fill.maker_id, fill.price, fill.size) == (2, 100, 5)
+    assert b.trades == [fill]
+    assert b.total_size("B") == 55
+    b.execute(2, 15)
+    assert not b.has_order(2) and b.n_orders("B") == 2
+    assert [f.maker_id for f in b.market("S", 40)[0]] == [1, 3]
+
+
+def test_replace_loses_priority_and_may_reuse_its_id():
+    b = three_bids()
+    assert b.replace(1, 1, 100, 10) == ([], 10)
+    assert b.replace_ticks(2, 9, 100, 20) == ([], 20)
+    assert not b.has_order(2) and b.has_order(9)
+    assert [f.maker_id for f in b.market("S", 60)[0]] == [3, 1, 9]
+
+
+def test_crossing_replace_executes():
+    b = LimitOrderBook(tick_size=1.0)
+    b.limit("S", 101, 5, 1)
+    b.limit("B", 99, 8, 2)
+    fills, rested = b.replace(2, 3, 101, 8)
+    assert [(f.maker_id, f.price, f.size) for f in fills] == [(1, 101, 5)]
+    assert rested == 3 and b.best_bid() == 101 and b.total_size("S") == 0
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda b: b.reduce(99, 1),
+        lambda b: b.reduce(1, 11),
+        lambda b: b.reduce(1, 0),
+        lambda b: b.execute(99, 1),
+        lambda b: b.execute(1, 11),
+        lambda b: b.execute(1, -1),
+        lambda b: b.replace(99, 5, 100, 1),
+        lambda b: b.replace(1, 2, 100, 1),
+        lambda b: b.replace(1, 5, 100.5, 1),
+        lambda b: b.replace(1, 5, 100, 0),
+        lambda b: b.replace_ticks(1, 5, 0, 1),
+    ],
+)
+def test_l3_errors_leave_the_book_unchanged(call):
+    b = three_bids()
+    with pytest.raises(ValueError):
+        call(b)
+    assert b.total_size("B") == 60 and b.n_orders("B") == 3
+    assert [f.maker_id for f in b.market("S", 60)[0]] == [1, 2, 3]
+
+
+def test_replace_counts_capacity_with_the_old_order_gone():
+    b = LimitOrderBook(tick_size=1.0)
+    b.limit_ticks("B", 100, lm.book.MAX_TICKS, 1)
+    b.replace_ticks(1, 2, 90, lm.book.MAX_TICKS)
+    assert b.total_size("B") == lm.book.MAX_TICKS
+    b.reduce(2, 1)
+    b.limit_ticks("B", 80, 1, 3)
+    with pytest.raises(ValueError):
+        b.replace_ticks(3, 4, 80, 2)
+    assert b.total_size("B") == lm.book.MAX_TICKS and b.has_order(3)
+
+
+def expected_v2():
+    from lobmod.replay import read_csv_lines
+
+    path = os.path.join(DATA_DIR, "lob_events_v2_expected.csv")
+    pairs = (ln.split(",") for ln in read_csv_lines(path, "key,value"))
+    return {k: [int(x) for x in v.split()] for k, v in pairs}
+
+
+def test_v2_fixture_reproduces_expected_book():
+    from lobmod.replay import apply_event_v2, read_events_v2_csv, replay_v2
+
+    events = read_events_v2_csv(os.path.join(DATA_DIR, "lob_events_v2.csv"))
+    want = expected_v2()
+    assert {e.etype for e in events} == set("LCMRUE")
+    b = LimitOrderBook(tick_size=1.0)
+    for e in events:
+        apply_event_v2(b, e)
+    assert [b.best_bid()] == want["best_bid"] and [b.best_ask()] == want["best_ask"]
+    assert [b.best_bid_size()] == want["best_bid_size"]
+    assert [b.best_ask_size()] == want["best_ask_size"]
+    assert [b.total_size("B")] == want["total_bid"]
+    assert [b.total_size("S")] == want["total_ask"]
+    assert b.order_ids("B") == want["order_ids_bid"]
+    assert b.order_ids("S") == want["order_ids_ask"]
+    assert [x for f in b.trades for x in (f.maker_id, f.price, f.size)] == want["trades"]
+    assert [events[-1].ts_ns] == want["last_ts_ns"]
+    st = replay_v2(events)
+    assert len(st) == 17 and st.mid[-1] == 999.5
+
+
+def test_v2_reader_lifts_v1_and_round_trips(tmp_path):
+    from lobmod.replay import read_events_csv, read_events_v2_csv, write_events_v2_csv
+
+    v1 = os.path.join(DATA_DIR, "lob_events.csv")
+    lifted = read_events_v2_csv(v1)
+    assert len(lifted) == 5000 and all(e.ts_ns == 0 for e in lifted)
+    assert lifted[0].order_id == read_events_csv(v1)[0].order_id
+    events = read_events_v2_csv(os.path.join(DATA_DIR, "lob_events_v2.csv"))
+    path = str(tmp_path / "v2.csv")
+    write_events_v2_csv(path, events)
+    assert read_events_v2_csv(path) == events
+
+
+@pytest.mark.parametrize(
+    "row", ["1,-1,L,B,100,1,1,0", "1,0,Z,B,100,1,1,0", "1,0,L,B,100,1,1", "1,0,L,B,100,1,1,0,"]
+)
+def test_v2_reader_rejects_bad_rows(tmp_path, row):
+    from lobmod.replay import read_events_v2_csv
+
+    path = tmp_path / "bad.csv"
+    path.write_text("seq,ts_ns,type,side,price,size,order_id,new_order_id\n" + row + "\n")
+    with pytest.raises(ValueError):
+        read_events_v2_csv(str(path))
