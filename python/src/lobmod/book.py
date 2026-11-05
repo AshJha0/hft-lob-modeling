@@ -26,13 +26,21 @@ empty (guarded, never a crash).
 Tick conversion (pinned)
 ------------------------
 A currency price ``p`` is converted with ``ratio = p / tick_size``, rounded
-half-up (``ratio > 0`` always) and accepted only if
-``|ratio - round(ratio)| <= 1e-9 * max(1, ratio)`` **and** the tick count is
-in ``[1, MAX_TICKS]`` (``MAX_TICKS = 9e18``).  A price that would round to
-0 ticks, or overflow a signed 64-bit tick count, is an error in every
-language port — it can never be interpreted as a market order or a negative
-price.  :meth:`LimitOrderBook.limit_ticks` bypasses the float conversion
-entirely for callers that already hold integer tick counts (the replay path).
+half-up (``ratio > 0`` always) and accepted only if ``ratio < 2^52``,
+``|ratio - round(ratio)| <= min(1e-9 * max(1, ratio), 0.01)`` **and** the tick
+count is at least 1.  From ``2^52`` up a double cannot represent an off-grid
+ratio, so the grid cannot be checked and the float path refuses; such prices
+go through :meth:`LimitOrderBook.limit_ticks`, which bypasses the float
+conversion and accepts integer tick counts up to ``MAX_TICKS = 9e18`` (the
+replay path).  A bad price is an error in every language port — it can never
+be interpreted as a market order or a negative price.
+
+Size capacity (pinned)
+----------------------
+A side's total resting size never exceeds ``MAX_TICKS``, so every size sum
+fits a signed 64-bit integer in every port.  A limit add is rejected before
+any mutation if the side's running total plus the *submitted* size exceeds
+``MAX_TICKS``, even if the order would have executed on arrival.
 
 Memory
 ------
@@ -53,6 +61,10 @@ from ._validate import as_int, as_positive_int
 
 #: largest accepted tick count (fits a signed 64-bit integer in every port)
 MAX_TICKS: int = 9_000_000_000_000_000_000
+#: at or above this ratio doubles have no fractional bits: grid check impossible
+MAX_GRID_RATIO: float = 4503599627370496.0  # 2^52
+#: absolute cap on the grid residual, in ticks
+GRID_TOL_CAP: float = 0.01
 
 
 @dataclass(frozen=True)
@@ -75,7 +87,7 @@ class LimitOrderBook:
 
     Args:
         tick_size: positive tick; every incoming price must be an integer
-            multiple of it (validated to 1e-9 relative precision).
+            multiple of it (see the pinned tick conversion above).
         record_trades: keep every :class:`Fill` in :attr:`trades` and every
             event in :attr:`log` (default).  ``False`` disables both — the
             book itself is unaffected; only the audit history is dropped.
@@ -100,6 +112,8 @@ class LimitOrderBook:
         self._asks: Dict[int, Deque[List[int]]] = {}
         # order_id -> (side, price ticks)
         self._orders: Dict[int, Tuple[str, int]] = {}
+        # side -> running total resting size (never above MAX_TICKS)
+        self._resting: Dict[str, int] = {self.BUY: 0, self.SELL: 0}
         #: executed trades as Fill records, in execution order
         self.trades: List[Fill] = []
         #: event log: (event_type, side, price_ticks, size, order_id, executed, unfilled)
@@ -110,9 +124,9 @@ class LimitOrderBook:
     def _to_ticks(self, price: float) -> int:
         """Validate that ``price`` sits on the tick grid and convert to ticks.
 
-        Pinned rule (identical in every port): ``ratio = price / tick_size``,
-        round half-up, accept iff the residual is within ``1e-9 * max(1,
-        ratio)`` and the result lies in ``[1, MAX_TICKS]``.
+        Pinned rule (identical in every port): ``ratio = price / tick_size``
+        must be below ``2^52``; round half-up; accept iff the residual is
+        within ``min(1e-9 * max(1, ratio), 0.01)`` and the result is >= 1.
         """
         if isinstance(price, bool) or not isinstance(price, numbers.Real):
             raise ValueError(f"price must be a positive finite number, got {price!r}")
@@ -120,19 +134,20 @@ class LimitOrderBook:
         if not math.isfinite(price) or price <= 0.0:
             raise ValueError(f"price must be positive and finite, got {price}")
         ratio = price / self.tick_size
+        if ratio >= MAX_GRID_RATIO:  # also catches ratio == inf
+            raise ValueError(
+                f"price {price} is {ratio:.6g} ticks, too large to validate on the grid "
+                f"(limit 2^52); use limit_ticks for counts up to MAX_TICKS"
+            )
         ticks = math.floor(ratio)
         if ratio - ticks >= 0.5:
             ticks += 1
-        if abs(ratio - ticks) > 1e-9 * max(1.0, ratio):
+        if abs(ratio - ticks) > min(1e-9 * max(1.0, ratio), GRID_TOL_CAP):
             raise ValueError(
                 f"price {price} is not a multiple of tick_size {self.tick_size}"
             )
         if ticks < 1:
             raise ValueError(f"price {price} rounds to 0 ticks; prices must be >= 1 tick")
-        if ticks > MAX_TICKS:
-            raise ValueError(
-                f"price {price} is {ratio:.6g} ticks, above MAX_TICKS = {float(MAX_TICKS):.1e}"
-            )
         return ticks
 
     @staticmethod
@@ -183,7 +198,11 @@ class LimitOrderBook:
         return 0 if a is None else sum(o[1] for o in self._asks[a])
 
     def mid(self) -> float:
-        """Mid price in ticks, ``(bid + ask) / 2``; NaN if either side is empty."""
+        """Mid price in ticks; NaN if either side is empty.
+
+        Pinned: the exact integer ``bid + ask`` rounded once to the nearest
+        double (ties to even), then halved.
+        """
         b, a = self.best_bid(), self.best_ask()
         if b is None or a is None:
             return math.nan
@@ -234,10 +253,9 @@ class LimitOrderBook:
         return as_int("order_id", order_id) in self._orders
 
     def total_size(self, side: str) -> int:
-        """Total resting size on ``side`` across all levels."""
+        """Total resting size on ``side`` across all levels (O(1))."""
         self._check_side(side)
-        levels = self._bids if side == self.BUY else self._asks
-        return sum(sum(o[1] for o in q) for q in levels.values())
+        return self._resting[side]
 
     def n_orders(self, side: str) -> int:
         """Number of live resting orders on ``side``."""
@@ -275,6 +293,7 @@ class LimitOrderBook:
                     del self._orders[order[0]]
             if not queue:
                 del opp[best]
+        self._resting[self.SELL if side == self.BUY else self.BUY] -= size - remaining
         if self.record_trades:
             self.trades.extend(fills)
         return fills, remaining
@@ -296,8 +315,9 @@ class LimitOrderBook:
             (fills, rested_size) — ``rested_size`` is 0 if fully executed.
 
         Raises:
-            ValueError: bad side/price/size, price outside ``[1, MAX_TICKS]``
-                ticks, or duplicate live ``order_id``.
+            ValueError: bad side/price/size, off-grid price, price at or above
+                ``2^52`` ticks, duplicate live ``order_id``, or a size that
+                would take the side's total above ``MAX_TICKS``.
         """
         self._check_side(side)
         return self.limit_ticks(side, self._to_ticks(price), size, order_id)
@@ -315,11 +335,16 @@ class LimitOrderBook:
         order_id = as_int("order_id", order_id)
         if order_id in self._orders:
             raise ValueError(f"order_id {order_id} is already live in the book")
+        if size > MAX_TICKS - self._resting[side]:
+            raise ValueError(
+                f"size {size} would take side {side} total resting size above MAX_TICKS"
+            )
         fills, remaining = self._match(side, size, ticks)
         if remaining > 0:
             levels = self._bids if side == self.BUY else self._asks
             levels.setdefault(ticks, deque()).append([order_id, remaining])
             self._orders[order_id] = (side, ticks)
+            self._resting[side] += remaining
         executed = size - remaining
         if self.record_trades:
             self.log.append(("L", side, ticks, size, order_id, executed, 0))
@@ -344,6 +369,7 @@ class LimitOrderBook:
                 removed = order[1]
                 del queue[i]
                 break
+        self._resting[side] -= removed
         if not queue:
             del levels[ticks]
         if self.record_trades:

@@ -458,7 +458,7 @@ fit = fit_uni(t, T=1000.0)
 tau = uni_residuals(t, 1000.0, fit.mu, fit.alpha, fit.beta)
 print(tau.mean(), (tau > 0).all())   # ~1.0 (Exp(1) mean), True
 d, p = ks_test_exp(tau)
-print(d, p)                          # 0.017205 0.863177 (golden, 1e-6): PASS
+print(d, p)                          # 0.017205 0.863177 (golden, 1e-6): no rejection (weak test, fitted params)
 ```
 
 **C++**
@@ -506,7 +506,7 @@ print(fit.alpha)          # [[0.727 0.303] [0.295 0.585]] (golden, 1e-3)
 print(fit.spectral_radius)  # 0.45678479107028125 (golden, 1e-6): stationary
 print(spectral_radius_2x2(fit.branching) == fit.spectral_radius)   # True
 # alpha[0,1] answers: how strongly does a SELL excite future BUYS?
-# self terms > cross terms => flow herds by side (order splitting).
+# self > cross here because the simulation was set up that way; not evidence about markets.
 ```
 
 **C++**

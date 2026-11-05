@@ -33,7 +33,8 @@ state_n+1 = (6364136223846793005 * state_n + 1442695040888963407) mod 2^64
 next_u64():        advance once, return new state
 uniform():         (next_u64() >> 11) * 2^-53            in [0, 1)
 exponential(rate): -log1p(-uniform()) / rate             (error: rate <= 0)
-geometric(p):      floor( log1p(-uniform()) / log1p(-p) ) in {0,1,2,...}
+geometric(p):      floor( log1p(-uniform()) / log1p(-p) ) in {0,1,2,...};
+                   error if the quotient is >= 2^63 (result must fit int64)
                    (error: p not in (0,1))
 randint(n):        min(floor(uniform() * n), n-1)        (error: n <= 0)
 ```
@@ -51,13 +52,18 @@ Draw order matters; consume uniforms exactly as the algorithms below state.
 
   ```
   ratio = price / tick_size                      (price <= 0 or non-finite: error)
+  error if ratio >= 2^52                         (grid cannot be validated)
   ticks = floor(ratio); if ratio - ticks >= 0.5: ticks += 1    (round half up)
-  error if |ratio - ticks| > 1e-9 * max(1, ratio)              (off-grid)
+  error if |ratio - ticks| > min(1e-9 * max(1, ratio), 0.01)   (off-grid)
   error if ticks < 1                                           (rounds to 0 ticks)
-  error if ticks > MAX_TICKS = 9e18                            (64-bit range)
   ```
 
-  An out-of-range price is therefore always an error and can never be
+  The 0.01-tick cap keeps the residual test meaningful at large ratios (a
+  purely relative tolerance passes half a tick above 5e8 ticks) while leaving
+  room for the rounding of `price / tick_size`, which reaches about 0.008
+  ticks near 1e14 ticks. From `2^52` up a double has no fractional bits, so
+  the float path refuses and the caller uses `limit_ticks`, which accepts up
+  to `MAX_TICKS = 9e18`. An out-of-range price is therefore always an error and can never be
   reinterpreted as a negative price or as an unbounded (market) order.
   Every port also exposes `limit_ticks(side, price_ticks, size, order_id)`
   taking the integer tick count directly (same validation, no float
@@ -97,12 +103,26 @@ Each fill records `(maker_id, price_ticks, fill_size)` in execution order.
 With best bid/ask prices `Pb, Pa` and *total level sizes at best* `qb, qa`:
 
 ```
-mid        = (Pb + Pa) / 2                     NaN if either side empty
+mid        = RN(Pb + Pa) / 2                   NaN if either side empty
 spread     = Pa - Pb                           NaN if either side empty
 microprice = (qa * Pb + qb * Pa) / (qa + qb)   NaN if either side empty
 depth(side, k) = sum of level sizes over the best k levels of side
                  (fewer levels: sum what exists; error: k <= 0, bad side)
 ```
+
+`RN` is one rounding of the exact integer sum to the nearest double, ties to
+even. The sum is at most 1.8e19, so it fits an unsigned 64-bit integer but not
+a signed one; ports must not add in signed 64-bit, and must not convert each
+price to double first (at `Pb = 2^53 + 1`, `Pa = 2^53 + 2` the rule gives
+`2^53 + 2`, the double-first sum gives `2^53`). `spread` subtracts as integers
+and then converts.
+
+**Size capacity.** A side's total resting size never exceeds `MAX_TICKS`, so
+every size sum above fits a signed 64-bit integer. After the size, price and
+duplicate-id checks, a limit add is rejected with the invalid-input error,
+before any mutation, if the side's running total plus the *submitted* size
+exceeds `MAX_TICKS`. The test uses the submitted size even if the order would
+execute on arrival, which keeps it O(1). Market orders are not limited by it.
 
 ### 2.4 Event stream schema (`data/lob_events.csv`)
 
@@ -115,8 +135,9 @@ used by replay). For `M`: `price = 0`, `order_id = 0`.
 Pinned CSV parsing rules (all three bundled schemas — this one, `t`, and
 `t,type` — and every port):
 
-* the header line must match exactly; a trailing `\r` (CRLF files) is
-  stripped from every line before any check;
+* the header line must match exactly; exactly one trailing `\r` (CRLF
+  files) is stripped from every line before any check, so a line ending
+  `\r\r\n` is rejected; files are read as UTF-8;
 * trailing blank lines are ignored; a blank line before the last data row
   is an error;
 * a row has exactly the schema's field count, split on `,` with no
@@ -476,7 +497,13 @@ improvement (aggressive limit executes at the resting price); cancel of
 unknown id errors; reuse of a cancelled id succeeds; empty-side NaN guards;
 tick validation including prices that round to 0 ticks (error, book
 unchanged) and large tick counts (`tick_size = 1e-8`, price 60000 rests at
-exactly 6,000,000,000,000 ticks; price 1e300 errors); CSV robustness (CRLF
+exactly 6,000,000,000,000 ticks; price 1e300 errors; `tick_size = 0.01`,
+price 5000000.004 errors; ratio `2^52` errors, `2^52 - 1` rests; `tick_size =
+1e-300`, price 1e308 errors); `mid` at 5e18 / 5e18+1, at 2^53+1 / 2^53+2 and at
+2^62 / 2^62+1025 (result 2^62+1024); side capacity (a second 9e18 add errors
+with the book unchanged; capacity returns after cancel and after a fill);
+`geometric(1e-300)` errors; Rosenbrock 4-D from (-1.2, 1, 0.7, 1.3) takes 308
+iterations; CSV robustness (CRLF
 and trailing blank line accepted; trailing comma, non-integer field,
 interior blank line, reordered header rejected); bundled streams regenerate
 bit-for-bit from their seeds.

@@ -37,8 +37,9 @@ import java.util.TreeMap;
  *
  * <p><b>64-bit everywhere.</b> Ticks, sizes and ids are {@code long}; the
  * pinned tick conversion is {@code ratio = price / tickSize}, rounded half
- * up, accepted iff {@code |ratio - ticks| <= 1e-9 * max(1, ratio)} and
- * {@code 1 <= ticks <= MAX_TICKS} (9e18). A price that rounds to 0 ticks or
+ * up, accepted iff {@code ratio < 2^52},
+ * {@code |ratio - ticks| <= min(1e-9 * max(1, ratio), 0.01)} and
+ * {@code ticks >= 1}. A price that rounds to 0 ticks or
  * would overflow is an error — it can never become a negative price or an
  * unbounded market order (the price bound of a match is an explicit
  * flag, not a sentinel value). {@link #limitTicks} takes integer tick
@@ -56,6 +57,10 @@ public final class LimitOrderBook {
     public static final char SELL = 'S';
     /** Largest accepted tick count / size (fits a signed 64-bit integer). */
     public static final long MAX_TICKS = 9_000_000_000_000_000_000L;
+    /** At or above this ratio doubles have no fractional bits (2^52). */
+    private static final double MAX_GRID_RATIO = 4503599627370496.0;
+    /** Absolute cap on the grid residual, in ticks. */
+    private static final double GRID_TOL_CAP = 0.01;
 
     /**
      * Result of a limit or market order submission.
@@ -89,6 +94,9 @@ public final class LimitOrderBook {
     private final TreeMap<Long, ArrayDeque<Order>> asks = new TreeMap<>();
     /** live order id -> (side, price ticks). */
     private final Map<Long, Location> orders = new HashMap<>();
+    /** Running total resting size per side (never above MAX_TICKS). */
+    private long bidTotal;
+    private long askTotal;
     /** executed trades in execution order. */
     private final List<Fill> trades = new ArrayList<>();
     private final List<Fill> tradesView = Collections.unmodifiableList(trades);
@@ -97,7 +105,7 @@ public final class LimitOrderBook {
      * Creates an empty book.
      *
      * @param tickSize positive finite tick; every incoming price must be an
-     *     integer multiple of it (validated to 1e-9 relative precision)
+     *     integer multiple of it (see the pinned tick conversion)
      * @param recordTrades keep every {@link Fill} in {@link #trades()};
      *     {@code false} disables recording (matching is unaffected)
      * @throws IllegalArgumentException on invalid tick size
@@ -147,19 +155,25 @@ public final class LimitOrderBook {
     // ------------------------------------------------------------------ utils
 
     /**
-     * Pinned tick conversion: round half up, grid residual within
-     * {@code 1e-9 * max(1, ratio)}, result in {@code [1, MAX_TICKS]}.
+     * Pinned tick conversion: ratio below {@code 2^52}, round half up, grid
+     * residual within {@code min(1e-9 * max(1, ratio), 0.01)}, result at
+     * least 1.
      */
     private long toTicks(double price) {
         if (!(Double.isFinite(price) && price > 0.0)) {
             throw new IllegalArgumentException("price must be positive and finite, got " + price);
         }
         double ratio = price / tickSize;
+        if (ratio >= MAX_GRID_RATIO) {
+            throw new IllegalArgumentException("price " + price + " is " + ratio
+                    + " ticks, too large to validate on the grid (limit 2^52);"
+                    + " use limitTicks for counts up to MAX_TICKS");
+        }
         double ticks = Math.floor(ratio);
         if (ratio - ticks >= 0.5) {
             ticks += 1.0;
         }
-        if (Math.abs(ratio - ticks) > 1e-9 * Math.max(1.0, ratio)) {
+        if (Math.abs(ratio - ticks) > Math.min(1e-9 * Math.max(1.0, ratio), GRID_TOL_CAP)) {
             throw new IllegalArgumentException(
                     "price " + price + " is not a multiple of tick_size " + tickSize);
         }
@@ -167,11 +181,7 @@ public final class LimitOrderBook {
             throw new IllegalArgumentException(
                     "price " + price + " rounds to 0 ticks; prices must be >= 1 tick");
         }
-        if (ticks > (double) MAX_TICKS) {
-            throw new IllegalArgumentException(
-                    "price " + price + " is " + ticks + " ticks, above MAX_TICKS");
-        }
-        return (long) ticks; // in [1, 9e18]: exact, no narrowing
+        return (long) ticks; // in [1, 2^52]: exact, no narrowing
     }
 
     private static long checkTicks(long ticks) {
@@ -229,12 +239,19 @@ public final class LimitOrderBook {
         return total;
     }
 
-    /** Mid price in ticks, {@code (bid + ask) / 2}; NaN if either side is empty. */
+    /**
+     * Mid price in ticks; NaN if either side is empty. Pinned: the exact
+     * integer {@code bid + ask} rounded once to the nearest double, then
+     * halved. The sum (at most 1.8e19) is held as an unsigned 64-bit value;
+     * above 2^63 it is halved with the lost bit kept as a sticky bit, so the
+     * single rounding stays correct.
+     */
     public double mid() {
         if (bids.isEmpty() || asks.isEmpty()) {
             return Double.NaN;
         }
-        return 0.5 * ((double) bids.lastKey() + (double) asks.firstKey());
+        long sum = bids.lastKey() + asks.firstKey();
+        return sum >= 0 ? 0.5 * (double) sum : (double) ((sum >>> 1) | (sum & 1L));
     }
 
     /** Bid-ask spread in ticks; NaN if either side is empty. */
@@ -242,7 +259,7 @@ public final class LimitOrderBook {
         if (bids.isEmpty() || asks.isEmpty()) {
             return Double.NaN;
         }
-        return asks.firstKey() - (double) bids.lastKey();
+        return (double) (asks.firstKey() - bids.lastKey());
     }
 
     /**
@@ -302,15 +319,10 @@ public final class LimitOrderBook {
         return orders.containsKey(orderId);
     }
 
-    /** Total resting size on {@code side} across all levels. */
+    /** Total resting size on {@code side} across all levels (O(1)). */
     public long totalSize(char side) {
         checkSide(side);
-        TreeMap<Long, ArrayDeque<Order>> levels = side == BUY ? bids : asks;
-        long total = 0;
-        for (ArrayDeque<Order> q : levels.values()) {
-            total += levelSize(q);
-        }
-        return total;
+        return side == BUY ? bidTotal : askTotal;
     }
 
     /** Number of live resting orders on {@code side}. */
@@ -365,6 +377,11 @@ public final class LimitOrderBook {
                 opp.remove(best);
             }
         }
+        if (side == BUY) {
+            askTotal -= size - remaining;
+        } else {
+            bidTotal -= size - remaining;
+        }
         if (recordTrades) {
             trades.addAll(fills);
         }
@@ -383,9 +400,10 @@ public final class LimitOrderBook {
      * @param size positive integer quantity
      * @param orderId unique id for the resting part
      * @return fills plus the rested size (0 if fully executed)
-     * @throws IllegalArgumentException on bad side/price/size, a price
-     *     outside {@code [1, MAX_TICKS]} ticks, or a duplicate live
-     *     {@code orderId}
+     * @throws IllegalArgumentException on bad side/price/size, an off-grid
+     *     price, a price at or above {@code 2^52} ticks, a duplicate live
+     *     {@code orderId}, or a size taking the side's total above
+     *     {@code MAX_TICKS}
      */
     public ExecResult limit(char side, double price, long size, long orderId) {
         checkSide(side);
@@ -408,12 +426,21 @@ public final class LimitOrderBook {
             throw new IllegalArgumentException(
                     "order_id " + orderId + " is already live in the book");
         }
+        if (size > MAX_TICKS - totalSize(side)) {
+            throw new IllegalArgumentException("size " + size + " would take side " + side
+                    + " total resting size above MAX_TICKS");
+        }
         ExecResult res = match(side, size, true, ticks);
         long remaining = res.remainder();
         if (remaining > 0) {
             TreeMap<Long, ArrayDeque<Order>> levels = side == BUY ? bids : asks;
             levels.computeIfAbsent(ticks, t -> new ArrayDeque<>()).addLast(new Order(orderId, remaining));
             orders.put(orderId, new Location(side, ticks));
+            if (side == BUY) {
+                bidTotal += remaining;
+            } else {
+                askTotal += remaining;
+            }
         }
         return res;
     }
@@ -444,6 +471,11 @@ public final class LimitOrderBook {
         }
         if (queue.isEmpty()) {
             levels.remove(ticks);
+        }
+        if (side == BUY) {
+            bidTotal -= removed;
+        } else {
+            askTotal -= removed;
         }
         return removed;
     }

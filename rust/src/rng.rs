@@ -77,7 +77,8 @@ impl Lcg64 {
     /// Pinned inversion formula `k = floor(log1p(-u) / log1p(-p))`.
     ///
     /// # Errors
-    /// [`LobError::InvalidInput`] if `p` is not in `(0, 1)`.
+    /// [`LobError::InvalidInput`] if `p` is not in `(0, 1)`, or the result
+    /// does not fit an `i64` (quotient >= `2^63`).
     pub fn geometric(&mut self, p: f64) -> Result<i64> {
         if !(p > 0.0 && p < 1.0) {
             return Err(LobError::InvalidInput(format!(
@@ -85,7 +86,13 @@ impl Lcg64 {
             )));
         }
         let u = self.uniform();
-        Ok(((-u).ln_1p() / (-p).ln_1p()).floor() as i64)
+        let x = (-u).ln_1p() / (-p).ln_1p();
+        if x >= 9_223_372_036_854_775_808.0 {
+            return Err(LobError::InvalidInput(format!(
+                "geometric variate {x:e} for p={p} exceeds the 64-bit range"
+            )));
+        }
+        Ok(x.floor() as i64)
     }
 
     /// Uniform integer in `{0, ..., n-1}` as `min(floor(uniform() * n), n-1)`.

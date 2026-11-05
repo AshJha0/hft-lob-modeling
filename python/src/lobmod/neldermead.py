@@ -92,7 +92,13 @@ def nelder_mead(
             break
         n_iter += 1
 
-        centroid = [sum(simplex[i][j] for i in range(n)) / n for j in range(n)]
+        # explicit left-to-right loop: builtin sum() is compensated on 3.12+
+        centroid = [0.0] * n
+        for j in range(n):
+            acc = 0.0
+            for i in range(n):
+                acc += simplex[i][j]
+            centroid[j] = acc / n
         worst = simplex[n]
         xr = [centroid[j] + (centroid[j] - worst[j]) for j in range(n)]
         fr = float(f(xr))

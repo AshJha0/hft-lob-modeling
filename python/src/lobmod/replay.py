@@ -107,14 +107,14 @@ def parse_int64(field: str, context: str) -> int:
 
 
 def read_csv_lines(path: str, expected_header: str) -> List[str]:
-    """Read a pinned-schema CSV: validate the header, strip ``\r``, drop
+    """Read a pinned-schema CSV: validate the header, strip one ``\r`` per line, drop
     trailing blank lines, and return the data lines.
 
     Raises:
         ValueError: bad header, or a blank line before the last data row.
     """
-    with open(path, newline="") as fh:
-        lines = [ln.rstrip("\r") for ln in fh.read().split("\n")]
+    with open(path, newline="", encoding="utf-8") as fh:
+        lines = [ln[:-1] if ln.endswith("\r") else ln for ln in fh.read().split("\n")]
     while lines and lines[-1] == "":
         lines.pop()
     if not lines or lines[0] != expected_header:

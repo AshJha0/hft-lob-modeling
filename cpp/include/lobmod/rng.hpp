@@ -61,15 +61,19 @@ public:
 
     /// Geometric variate on {0, 1, 2, ...}: failures before the first success,
     /// by the pinned inversion formula floor(log1p(-u) / log1p(-p)).
-    /// \throws std::invalid_argument if p is not in (0, 1).
+    /// \throws std::invalid_argument if p is not in (0, 1), or the result does
+    ///         not fit an int64 (quotient >= 2^63).
     std::int64_t geometric(double p) {
         if (!(p > 0.0 && p < 1.0)) {
             throw std::invalid_argument("p must be in (0, 1), got " +
                                         std::to_string(p));
         }
         const double u = uniform();
-        return static_cast<std::int64_t>(
-            std::floor(std::log1p(-u) / std::log1p(-p)));
+        const double x = std::log1p(-u) / std::log1p(-p);
+        if (x >= 9223372036854775808.0) {
+            throw std::invalid_argument("geometric variate exceeds the 64-bit range");
+        }
+        return static_cast<std::int64_t>(std::floor(x));
     }
 
     /// Uniform integer in {0, ..., n-1} as min(floor(uniform() * n), n-1).

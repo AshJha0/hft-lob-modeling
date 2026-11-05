@@ -24,7 +24,7 @@ execute immediately *rest* in the **limit order book** (LOB), organized as:
 Prices live on a discrete grid of integer multiples of the **tick size**. In
 `lobmod` a price is internally a signed 64-bit integer tick count (a currency
 price is converted once, at the API boundary, by rounding half up and
-requiring `1 <= ticks <= 9e18` within a `1e-9` relative grid tolerance —
+requiring `1 <= ticks <= 9e18` within a `1e-9` relative grid tolerance (capped at 0.01 tick) —
 anything else is an error, never a silent rescale or a tick-0 order); the
 event stream carries tick counts directly, and the bundled stream uses
 `tick_size = 1`.
@@ -66,10 +66,16 @@ $$
 
 The microprice is a size-weighted mid that **leans toward the thin side**: if
 the ask queue is small ($q_a \ll q_b$), the ask is likely to be consumed first
-and the price to tick up, so the microprice sits nearer $P_a$. It is a better
-short-horizon fair-value estimate than the mid, and its weights are exactly the
+and the price to tick up, so the microprice sits nearer $P_a$. It is a more
+useful one-line summary of the touch than the mid, and its weights match the
 one-step "which queue depletes first" probabilities under a symmetric-race
 approximation.
+
+A naming warning. What this project calls `microprice` is the size-weighted
+mid above. It is not the micro-price of Stoikov (2018), which is defined as the
+limit of expected future mids given the current imbalance and spread and has
+to be estimated from data. Stoikov introduces that quantity partly because the
+size-weighted mid is noisy and is not a martingale.
 
 All three are NaN-guarded when a side is empty (no best quote → no mid), never
 an error: an empty side is a legitimate market state, e.g. after a large sweep.
@@ -121,17 +127,20 @@ Real order flow is emphatically *not* Poisson. Robust empirical regularities:
 
 1. **Clustering / burstiness.** Trades and quote changes arrive in clusters:
    the distribution of inter-event times is far heavier-tailed than exponential.
-   In the bundled Hawkes sample the minimum gap is 0.0005 vs a mean of 0.822 —
-   a ratio no homogeneous Poisson process would plausibly produce over 1211 events.
+   The measure to use is dispersion: the coefficient of variation of the gaps
+   is 1 for a Poisson process and 1.63 in the bundled (simulated) Hawkes sample.
+   The smallest gap tells you little. With 1210 gaps averaging 0.822, a Poisson
+   process produces a gap as small as the observed 0.0005 about half the time.
 2. **Self-excitation.** An event raises the probability of further events:
    trades trigger cancellations, quote updates, and more trades (order
    splitting, stop-loss cascades, algos reacting to each other). This is the
    defining feature Hawkes processes capture.
 3. **Cross-excitation by side.** Buy market orders excite more buy orders
    (herding, parent-order splitting) and, more weakly, sell orders (market
-   makers rebalancing, mean-reversion traders). The bivariate fit on the bundled
-   data shows exactly this: self terms (0.727, 0.585) dominate cross terms
-   (0.303, 0.295).
+   makers rebalancing, mean-reversion traders). The bundled bivariate sample was
+   simulated with self terms above cross terms, and the fit recovers that
+   ordering: self (0.727, 0.585), cross (0.303, 0.295). That checks the
+   estimator. It is not evidence about markets.
 4. **Long memory of order-flow signs.** The autocorrelation of trade signs
    decays like a power law over thousands of trades (metaorder splitting) —
    one reason a single exponential kernel is an approximation (see §3.4).
@@ -144,9 +153,11 @@ Real order flow is emphatically *not* Poisson. Robust empirical regularities:
    fits use a time-varying $\mu(t)$ or restrict to intraday windows.
 
 The zero-intelligence generator (`lobmod.zi`) deliberately produces only *some*
-of these facts: it creates realistic book shapes, spreads and depletion events
-from Poisson-type rates (Smith-Farmer style), but no self-excitation — that is
-what the Hawkes layer adds on top.
+of these facts: it creates spreads and depletion events from fixed event-type
+probabilities, but no self-excitation — that is what the Hawkes layer adds on
+top. It is inspired by Smith, Farmer, Gillemot & Krishnamurthy (2003) and differs
+from that model: prices are placed at a geometric distance off the opposite
+best, and there is no event clock.
 
 ---
 
@@ -188,7 +199,10 @@ $$
 
 - $n < 1$: subcritical, stationary; a fraction $n$ of all events are
   endogenous "echoes" of other events.
-- $n \ge 1$: supercritical; cascades don't die out, the process explodes.
+- $n = 1$: critical; every cascade dies out with probability 1, but its
+  expected size is infinite and no stationary version exists with $\mu > 0$.
+- $n > 1$: supercritical; cascades survive with positive probability and the
+  process explodes.
 - The stationary mean rate is $\bar\lambda = \mu / (1 - n)$ — the immigrant
   rate amplified by the cascade multiplier $1/(1-n)$.
 
@@ -355,10 +369,10 @@ $$
 
 Intuition: $\Lambda$ stretches busy periods and compresses quiet ones until the
 clock ticks at unit speed. For the exponential Hawkes model the compensator at
-event times is again recursive: with $S_i$ from the likelihood recursion,
+event times is again recursive: with $R_i$ from the likelihood recursion,
 
 $$
-\Lambda(t_i) = \mu t_i + \frac{\alpha}{\beta}\left[(i-1) - S_i\right].
+\Lambda(t_i) = \mu t_i + \frac{\alpha}{\beta}\left[(i-1) - R_i\right].
 $$
 
 Model checking then reduces to a distribution test of $\{\tau_i\}$ against
@@ -377,13 +391,23 @@ $$
 \qquad p = 2\sum_{j=1}^{100} (-1)^{j-1} e^{-2 j^2 \lambda^{*2}} \in [0,1].
 $$
 
+That series is the branch for $\lambda^* \ge 0.1$. It converges slowly near
+zero, so below 0.1 the code switches to the dual (Jacobi theta) form of the same
+function.
+
 Golden `hawkes_uni_ks_fitted`: $D = 0.0172047$, $p = 0.8631775$ on the fitted
 residuals — no rejection, and the residual mean is 0.99963 ≈ 1 as theory
-demands. The demo's deliberately wrong parameters give $p \approx 2\cdot10^{-14}$:
-the test has real power. Two caveats are documented, not hidden: with tiny $n$
-the asymptotic p-value is only indicative, and testing residuals at *fitted*
-(not true) parameters makes the test slightly conservative — the estimation
-step uses up some of the discrepancy.
+demands. The demo's deliberately wrong parameters give $p \approx 2\cdot10^{-14}$,
+but those are parameters nobody fitted, so that number says little about power.
+
+Two caveats. With tiny $n$ the asymptotic p-value is only indicative. The larger
+one: the p-value assumes parameters fixed in advance, and testing residuals at
+*fitted* parameters makes the test far too lenient, not slightly conservative.
+The fit absorbs most of the discrepancy. In simulation, 0 of 400 runs rejected at
+5% under the true model, where a calibrated test would reject about 20, and wrong
+kernels were rejected only 3–5% of the time. Read "no rejection" here as very
+weak evidence. A parametric bootstrap that refits on each simulated path gives
+a calibrated test; see `lobmod.research` and `research/results.md`.
 
 ---
 
@@ -460,9 +484,11 @@ than the model:
    logistic regression (identical training machinery, zero hidden layers) and
    the majority class. Goldens: MLP 0.7042145594, logistic 0.6996168582,
    majority 0.6582375479 on the 1305-row holdout. The gaps are the story: most
-   of the accuracy is the flat-class base rate; the nonlinearity adds ~0.5% over
-   linear. That ordering — small, honest increments over strong baselines — is
-   what real microstructure results look like.
+   of the accuracy is the flat-class base rate, and the MLP's ~0.5 point lead over
+   logistic on this one split does not hold up: across 100 seeds logistic beats
+   the MLP by 0.59 points (SE 0.16). What the models learn is generator
+   mechanics, since spread alone gives 0.693 of the 0.704. Compare models over
+   many seeds before reading anything into a gap this small.
 5. **Degenerate cases must not crash.** All-one-class labels still train (loss
    finite, decreasing) and the majority baseline wins; that is a reported
    outcome, not an exception.
@@ -534,8 +560,10 @@ randomness:
 - **Pinned init**: $W_l[i,j] = 0.5\sqrt{2/n_{\text{in}}}\,
   \sin(10000\,l + i\,n_{\text{out}} + j + 1)$, $b_l = 0$. The sine of distinct
   integers gives well-spread values in $[-1,1]$ (deterministic pseudo-noise);
-  $\sqrt{2/n_{\text{in}}}$ is He scaling, which keeps ReLU activation variance
-  roughly constant across layers.
+  $\sqrt{2/n_{\text{in}}}$ comes from He scaling, but this init is smaller
+  than He: the 0.5 factor and $E[\sin^2] \approx 1/2$ put the weight variance
+  about 8x below $2/n_{\text{in}}$, so ReLU activations shrink layer by layer
+  at the start of training rather than holding steady.
 - **Full-batch gradient descent**: exactly one update per epoch on the whole
   training set, `lr = 0.1`, 800 epochs, no shuffling, minibatches, momentum or
   regularization. The recorded history entry per epoch is the training loss
@@ -565,9 +593,13 @@ $$
 \text{net} = \text{gross} - \sum_i |\text{pos}_i| \cdot \frac{\text{spread}_i}{2}.
 $$
 
-The half-spread per non-flat signal is the *floor* cost of crossing the spread
-on entry, marked mid-to-mid. Golden `signal_pnl_after_costs`: **gross +45.0
-ticks, net −139.5 ticks over 177 trades**. The arithmetic is brutal and general:
+This is a scoring rule, not a strategy. Each non-flat signal is charged one
+half-spread on entry and marked mid-to-mid, with no exit cost. Signals overlap,
+since each holds for $H$ events: the 177 signals form only 53 distinct runs.
+Golden `signal_pnl_after_costs`: **gross +45.0 ticks, net −139.5 ticks over 177
+signals**. An executable taker on the bundled stream, which crosses the spread
+both ways, makes 35 round trips for −49 ticks (see `research/results.md`). The
+arithmetic of the scoring rule:
 
 - Average gross edge per trade: $45/177 \approx 0.25$ ticks.
 - Average half-spread paid: $(45.0 - (-139.5))/177 = 184.5/177 \approx 1.04$
@@ -576,15 +608,17 @@ ticks, net −139.5 ticks over 177 trades**. The arithmetic is brutal and genera
   actually fires is 2.08 ticks. Spread is one of the five features, and the
   model fires disproportionately when the spread is wide — precisely the
   states where crossing is most expensive.
-- Edge < cost, therefore net < 0. Predicting direction with 70% accuracy is
-  *not enough* when most correct predictions are worth a fraction of the
-  spread you pay to act on them.
+- Edge < cost, therefore net < 0. The 70% accuracy is mostly the flat class, not
+  directional skill: of the 177 signals actually traded, 87 were right, 63 wrong
+  and 27 landed flat. Even the right ones are worth a fraction of the spread
+  you pay to act on them.
 
-And this floor is optimistic: real trading adds exchange fees, adverse
-selection (your marketable orders fill exactly when the queue is about to move
-against you — the fills you get are worse than the average row), impact of your
-own order, and latency (by the time you act, the state that generated the
-signal has partly resolved). This is why documented book-imbalance
+And this accounting is optimistic: a taker also pays exchange fees, the far side
+of the spread on exit, the impact of its own order, and latency (by the time you
+act, the state that generated the signal has partly resolved). Adverse selection
+is a separate cost that falls on passive fills: a resting order tends to fill
+just as the price moves through it, so a strategy that tries to save the spread
+by posting pays this instead. This is why documented book-imbalance
 predictability coexists peacefully with efficient markets: **the signal lives
 inside the bid-ask bounce**. The firms that do monetize such signals either
 (a) capture the spread instead of paying it — posting limit orders and using
@@ -617,7 +651,7 @@ axis:
   has faithful FIFO queues but no concept of "our" order competing with
   others' reactions.
 - **Feeds and state reconstruction.** Real systems build the book from
-  ITCH/OUCH-style message feeds, handle A/B feed arbitration, gaps,
+  ITCH-style market-data feeds (OUCH is the order-entry protocol, not a feed), handle A/B feed arbitration, gaps,
   retransmits, and venue-specific auction/halt states; messages can arrive out
   of order across venues. Here the event stream is clean, complete and
   sequenced by construction.
@@ -638,7 +672,9 @@ them: research layer, not the trading loop.
 A concrete, honest workflow for a market-microstructure research desk:
 
 1. **Reconstruct and audit.** Convert a captured feed into the `L/C/M`
-   schema with prices in *integer ticks* (`price_ticks = round(price /
+   schema. The schema has no execute-by-id, partial cancel (reduce) or replace
+   message, so those must be mapped by hand or the replay will not match the
+   venue's book. Use prices in *integer ticks* (`price_ticks = round(price /
    tick)`; the library refuses off-grid prices, prices that round to 0 ticks,
    and tick counts beyond 9e18, so a wrong `tick_size` fails loudly instead of
    silently rescaling). `replay` then rebuilds top-of-book state after every
@@ -709,27 +745,30 @@ add/cancel/market, fees, latency, and any notion of "our" order in the queue.
 9. **Leakage via standardization or shuffling** (§5). The two most common ways
    published microstructure backtests flatter themselves.
 10. **KS on estimated parameters and tiny samples.** Both make the stated
-    p-value approximate (conservative for fitted params; asymptotic formula
-    inaccurate for small $n$). The implementation documents rather than hides
-    this — small-$n$ input is legal, the caveat is on the caller.
+    p-value wrong. With fitted parameters it is far too large (0/400 rejections
+    at 5% under the true model, §3.7), so use the bootstrap in `lobmod.research`.
+    With small $n$ the asymptotic formula is inaccurate; such input is legal
+    and the caveat is on the caller.
 
 ---
 
-## 10. Interview-style Q&A
+## 10. Knowledge check
 
-**Q1. Why is the microprice a better short-horizon predictor than the mid?**
-Because it weights the quotes by *opposite* queue sizes:
+**Q1. Why can the size-weighted mid (this project's `microprice`) say more
+about the next move than the mid?** Because it weights the quotes by *opposite* queue sizes:
 $(q_a P_b + q_b P_a)/(q_a+q_b)$. If the ask queue is thin it depletes first, so
 the price is more likely to tick up, and the microprice already leans that way.
-The mid throws queue information away; empirically the microprice is closer to
-a martingale at event scale.
+The mid throws queue information away. It is still not Stoikov's (2018)
+micro-price, which is the limit of expected future mids and is built to be a
+martingale; the size-weighted mid is not one.
 
 **Q2. What is the branching ratio of a Hawkes process and why do practitioners
 care?** $n = \int \phi = \alpha/\beta$: expected offspring per event. It splits
 activity into exogenous ($1-n$ fraction) and endogenous ($n$) components,
 determines stationarity ($n<1$), and amplifies the base rate to
-$\mu/(1-n)$. Market estimates near 1 imply most events are echoes of other
-events — high endogeneity, fragility to feedback loops (flash crashes).
+$\mu/(1-n)$. Some published estimates near 1 are read as high endogeneity, with
+most events echoes of others. Those estimates depend heavily on the baseline and
+kernel chosen, and any link to episodes such as flash crashes is a hypothesis.
 
 **Q3. Derive the Hawkes likelihood recursion.** Split
 $R_i = \sum_{j<i} e^{-\beta(t_i-t_j)}$ at $j = i-1$: the $j=i-1$ term is
@@ -751,8 +790,10 @@ makes the ceiling-rate process Poisson piecewise).
 Time-rescaling: transform event times through the fitted compensator
 $\Lambda$; increments must be iid Exp(1). Check with a KS test (plus a mean
 ≈ 1 sanity check and monotone $\Lambda$). Rejection means misspecification —
-wrong kernel shape, missing marks, or nonconstant baseline. Remember the test
-is conservative when the same data estimated the parameters.
+wrong kernel shape, missing marks, or nonconstant baseline. No rejection means
+little when the same data estimated the parameters: here that test rejected
+0/400 true models and only 3–5% of wrong kernels, so refit inside a parametric
+bootstrap (`lobmod.research`).
 
 **Q6. Define OFI and explain why it beats trade imbalance.** OFI sums signed
 best-quote supply/demand changes: bid improvements/additions minus bid
@@ -763,11 +804,13 @@ linear in OFI with $R^2$ far above trade-count regressions.
 
 **Q7. Your LOB classifier scores 70% out-of-sample. Why might it still lose
 money?** (a) The base rate: majority class alone scores 66% — the model's
-genuine edge is a few points. (b) The predicted moves are sub-spread: ~0.25
+apparent edge is a few points, and of the 177 signals traded only 87 were right
+(63 wrong, 27 flat). (b) The predicted moves are sub-spread: ~0.25
 ticks gross per trade vs ~1.04 ticks half-spread cost on the rows it trades
 (the signal fires when spreads are wide) — net negative (golden: +45.0 gross,
-−139.5 net over 177 trades). (c) Adverse selection and latency degrade
-realized fills below backtest assumptions. Accuracy is not PnL.
+−139.5 net over 177 trades). (c) Exit costs, impact and latency make it worse
+for a taker, and posting instead swaps the spread for adverse selection on
+passive fills. Accuracy is not PnL.
 
 **Q8. Why chronological rather than random train/test splits here?** Serial
 dependence and overlapping labels. Random splits interleave train and test
@@ -780,8 +823,8 @@ genuinely later period.
 instead of random draws?** Cross-language golden tests require the *trained*
 network to match to 1e-8, so training must be bit-deterministic in four
 languages: no RNG, no shuffling, full-batch updates. $\sin$ of distinct
-integers provides fixed, well-spread pseudo-noise; the $\sqrt{2/n_{in}}$
-factor is standard He scaling for ReLU. The lesson generalizes: determinism is
+integers provides fixed, well-spread pseudo-noise. The scale borrows He's
+$\sqrt{2/n_{in}}$, but with the 0.5 factor the variance is about 8x below He. The lesson generalizes: determinism is
 a testing tool; production uses random init over multiple seeds.
 
 **Q10. A market order arrives for more size than the entire opposite side
@@ -793,7 +836,29 @@ edge case and test in every language.)
 
 ---
 
-## 11. Further reading
+## 11. Topics not covered
+
+This lab stops well short of the field. These are the next things to read, and
+none of them is implemented here:
+
+- **Kyle (1985)** and **Glosten-Milgrom (1985)**: price formation under informed
+  trading, and why spreads exist at all.
+- **Avellaneda-Stoikov (2008)**: inventory-aware market-making quotes.
+- **Almgren-Chriss (2001)**: optimal execution against impact and risk.
+- **Propagator and square-root impact**: how impact builds and decays with size
+  and time.
+- **Queue-reactive models** (Huang, Lehalle & Rosenbaum, 2015): order flow whose
+  rates depend on the book state.
+- **Realised spread** and **Lee-Ready (1991)** trade signing: how fills are
+  measured on real data.
+- **Hasbrouck (1991, 1995)**: VAR models of trades and quotes, and information
+  shares.
+- **The Epps effect**: correlations that shrink at short sampling intervals.
+- **Marked Hawkes processes**: excitation that depends on order size or type.
+
+---
+
+## 12. Further reading
 
 - Hawkes (1971), *Spectra of some self-exciting and mutually exciting point
   processes*, Biometrika — the original.

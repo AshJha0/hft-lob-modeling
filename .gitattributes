@@ -1,0 +1,10 @@
+# Normalise text to LF in the repository; keep bundled data byte-exact everywhere.
+* text=auto
+data/** -text
+*.sh text eol=lf
+*.py text eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.pdf binary

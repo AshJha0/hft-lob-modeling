@@ -72,9 +72,9 @@ def main() -> None:
         warnings.simplefilter("ignore")
         fit_u = lm.fit_uni(t_uni, T_uni)
     true_u = dgp["hawkes_uni"]
+    gaps = np.diff(t_uni)
     print(f"{t_uni.size} events on [0, {T_uni:.0f}]  "
-          f"(min gap {np.diff(t_uni).min():.4f} vs mean {np.diff(t_uni).mean():.3f} "
-          "— self-exciting bursts)")
+          f"(gap CV {gaps.std() / gaps.mean():.2f} vs 1 for Poisson)")
     print("\n  param        true    fitted")
     for name, tv, fv in (("mu", true_u["mu"], fit_u.mu),
                          ("alpha", true_u["alpha"], fit_u.alpha),
@@ -91,7 +91,7 @@ def main() -> None:
     d, p = lm.ks_test_exp(tau)
     print("time-rescaled inter-arrivals should be iid Exp(1) under the model:")
     print(f"  fitted params : KS stat {d:.4f}, p-value {p:.4f} -> "
-          f"{'PASS (no rejection at 5%)' if p > 0.05 else 'REJECT'}")
+          f"{'no rejection (test is weak with fitted parameters)' if p > 0.05 else 'REJECT'}")
     tau_wrong = lm.uni_residuals(t_uni, T_uni, 1.5, 0.1, 3.0)
     dw, pw = lm.ks_test_exp(tau_wrong)
     print(f"  wrong params  : KS stat {dw:.4f}, p-value {pw:.2e} -> REJECT (sanity)")
@@ -115,14 +115,14 @@ def main() -> None:
           f"beta = {fit_b.beta:.4f}")
     print(f"  spectral radius of branching matrix = {fit_b.spectral_radius:.4f} "
           f"({'stationary' if fit_b.spectral_radius < 1 else 'NON-STATIONARY'})")
-    print("  interpretation: self-excitation (buy<-buy, sell<-sell) dominates the")
-    print("  cross terms — order flow is strongly clustered by side (herding /")
-    print("  order splitting), with weaker but positive cross-side contagion.")
+    print("  interpretation: self terms exceed cross terms because the simulation was")
+    print("  parameterised that way; the fit recovers them. This checks the estimator")
+    print("  and says nothing about real order flow.")
     taus = lm.biv_residuals(t_biv, k_biv, T_biv, fit_b.mu, fit_b.alpha, fit_b.beta)
     for name, tt in zip(("buy", "sell"), taus):
         dd, pp = lm.ks_test_exp(tt)
         print(f"  KS residuals ({name:4s}): stat {dd:.4f}, p {pp:.4f} -> "
-              f"{'PASS' if pp > 0.05 else 'REJECT'}")
+              f"{'no rejection (test is weak with fitted parameters)' if pp > 0.05 else 'REJECT'}")
 
     # ----------------------------------------------------- features + learning
     section("5. Direction prediction: MLP vs logistic vs majority")
@@ -161,9 +161,10 @@ def main() -> None:
     print(f"trading the MLP signal on the holdout ({n_trades} trades, "
           "mid-to-mid, half-spread cost per trade):")
     print(f"  gross PnL {gross:+.1f} ticks   net PnL {net_pnl:+.1f} ticks")
-    print("note: the classifier finds real structure (it beats both baselines and")
-    print("gross PnL is positive), but paying half the spread on every trade")
-    print("erases it — naive microstructure signals die on transaction costs.")
+    print("note: on this split the MLP edges both baselines and gross PnL is positive,")
+    print("but across 100 seeds logistic beats the MLP by 0.59 pts (SE 0.16). The structure")
+    print("is generator mechanics (spread alone gives 0.693 of the 0.704), and paying half")
+    print("the spread on every trade erases the gross PnL. See research/results.md.")
 
     print("\ndemo complete.")
 

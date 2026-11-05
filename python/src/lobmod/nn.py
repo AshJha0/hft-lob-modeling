@@ -16,7 +16,8 @@ randomness at all:
       b_l = 0.
 
   The ``sin`` of distinct integers gives well-spread values in [-1, 1]; the
-  ``sqrt(2/n_in)`` factor is He-style scaling for ReLU units.
+  ``sqrt(2/n_in)`` factor comes from He scaling, but the 0.5 and the sine make
+  the weight variance about 8x below He (0.25 * E[sin^2] = 1/8).
 * **Full-batch gradient descent**: one gradient step per epoch on the entire
   training set (no shuffling, no minibatches), pinned learning rate and epoch
   count.

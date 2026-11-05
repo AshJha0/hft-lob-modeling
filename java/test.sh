@@ -3,8 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-JUNIT=/usr/share/java/junit4.jar
-HAMCREST=/usr/share/java/hamcrest.jar
+# JUNIT_CP overrides the JUnit + Hamcrest classpath.
+JUNIT_CP="${JUNIT_CP:-/usr/share/java/junit4.jar:/usr/share/java/hamcrest.jar}"
 
 if [ ! -d out/test ]; then
     bash build.sh
@@ -13,4 +13,4 @@ fi
 TESTS=$(cd out/test && find . -name '*Test.class' ! -name '*\$*' \
     | sed 's|^\./||; s|\.class$||; s|/|.|g' | sort)
 
-java -cp "out/main:out/test:$JUNIT:$HAMCREST" org.junit.runner.JUnitCore $TESTS
+java -cp "out/main:out/test:$JUNIT_CP" org.junit.runner.JUnitCore $TESTS
