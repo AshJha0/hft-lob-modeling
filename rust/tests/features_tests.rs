@@ -89,7 +89,10 @@ fn labels_use_epsilon_dead_zone() {
     let fs = compute_features(&st, &tiny_config()).unwrap();
     assert_eq!(fs.event_index, vec![2, 3, 4, 5, 6]);
     // d = +0.5 (> eps) -> up; 0 -> flat; -0.3 -> down; -1.2 -> down; 0 -> flat
-    assert_eq!(fs.y, vec![LABEL_UP, LABEL_FLAT, LABEL_DOWN, LABEL_DOWN, LABEL_FLAT]);
+    assert_eq!(
+        fs.y,
+        vec![LABEL_UP, LABEL_FLAT, LABEL_DOWN, LABEL_DOWN, LABEL_FLAT]
+    );
     assert_eq!(fs.fwd_ret[0], 0.5);
     assert_eq!(fs.spread[0], 2.0);
     // feature columns: ret_i = mid_i - mid_{i-2}

@@ -84,4 +84,4 @@ __all__ = [
     "Lcg64", "MAX_SEED", "generate_events",
 ]
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

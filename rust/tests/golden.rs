@@ -9,9 +9,9 @@ use std::sync::OnceLock;
 use common::{check_case, load_golden};
 use lobmod::{
     accuracy, biv_loglik, chronological_split, compute_features, fit_biv, fit_uni, ks_test_exp,
-    load_feature_config, majority_class, ofi_at, read_events_csv, replay, signal_pnl,
-    uni_loglik, uni_loglik_brute, uni_residuals, BookStates, FeatureSet, HawkesBivFit,
-    HawkesUniFit, Matrix, Mlp, Standardizer,
+    load_feature_config, majority_class, ofi_at, read_events_csv, replay, signal_pnl, uni_loglik,
+    uni_loglik_brute, uni_residuals, BookStates, FeatureSet, HawkesBivFit, HawkesUniFit, Matrix,
+    Mlp, Standardizer,
 };
 
 const T_UNI: f64 = 1000.0;
@@ -151,7 +151,10 @@ fn golden_hawkes_uni_loglik_pinned() {
     check_case(case, &[("loglik", ll)]);
     // and the recursion agrees with brute force on the full bundled sample
     let brute = uni_loglik_brute(uni_times(), t_end, mu, alpha, beta).expect("brute");
-    assert!((ll - brute).abs() <= 1e-10, "recursion {ll} vs brute {brute}");
+    assert!(
+        (ll - brute).abs() <= 1e-10,
+        "recursion {ll} vs brute {brute}"
+    );
 }
 
 #[test]
@@ -162,7 +165,10 @@ fn golden_hawkes_uni_fit_and_branching() {
         &golden["hawkes_uni_fit"],
         &[("mu", fit.mu), ("alpha", fit.alpha), ("beta", fit.beta)],
     );
-    check_case(&golden["hawkes_uni_branching"], &[("branching", fit.branching)]);
+    check_case(
+        &golden["hawkes_uni_branching"],
+        &[("branching", fit.branching)],
+    );
     assert!(fit.converged, "univariate NM should converge");
 }
 
@@ -263,7 +269,11 @@ fn golden_signal_pnl() {
     .expect("pnl");
     check_case(
         &golden["signal_pnl_after_costs"],
-        &[("gross", gross), ("net", net), ("n_trades", n_trades as f64)],
+        &[
+            ("gross", gross),
+            ("net", net),
+            ("n_trades", n_trades as f64),
+        ],
     );
     assert!(net < 0.0, "half-spread costs kill the naive signal");
     assert_eq!(pipe.x_test.rows(), pipe.y_test.len());

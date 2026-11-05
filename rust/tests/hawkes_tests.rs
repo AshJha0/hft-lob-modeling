@@ -6,10 +6,10 @@ mod common;
 
 use common::{biv_data, uni_times};
 use lobmod::{
-    biv_fit_objective, biv_loglik, biv_loglik_brute, biv_residuals, fit_biv, fit_biv_with,
-    fit_uni, fit_uni_with, ks_test_exp, nelder_mead, read_marked_times_csv, read_times_csv,
-    simulate_biv, simulate_uni, spectral_radius_2x2, uni_fit_objective, uni_loglik,
-    uni_loglik_brute, uni_residuals, write_marked_times_csv, write_times_csv,
+    biv_fit_objective, biv_loglik, biv_loglik_brute, biv_residuals, fit_biv, fit_biv_with, fit_uni,
+    fit_uni_with, ks_test_exp, nelder_mead, read_marked_times_csv, read_times_csv, simulate_biv,
+    simulate_uni, spectral_radius_2x2, uni_fit_objective, uni_loglik, uni_loglik_brute,
+    uni_residuals, write_marked_times_csv, write_times_csv,
 };
 
 const T_UNI: f64 = 1000.0;
@@ -81,14 +81,7 @@ fn simulate_uni_reproduces_bundled_sample() {
 #[test]
 fn simulate_biv_reproduces_bundled_sample() {
     let (bundled_t, bundled_k) = biv_data();
-    let (t, k) = simulate_biv(
-        &[0.3, 0.3],
-        &[[0.6, 0.3], [0.25, 0.5]],
-        2.0,
-        T_BIV,
-        33,
-    )
-    .unwrap();
+    let (t, k) = simulate_biv(&[0.3, 0.3], &[[0.6, 0.3], [0.25, 0.5]], 2.0, T_BIV, 33).unwrap();
     assert_eq!(t.len(), 611);
     assert_eq!(t, bundled_t);
     assert_eq!(k, bundled_k);
@@ -195,7 +188,10 @@ fn biv_residuals_per_type_behave() {
     assert_eq!(taus[0].len(), n0);
     assert_eq!(taus[1].len(), t.len() - n0);
     for tau in &taus {
-        assert!(tau.iter().all(|&v| v > 0.0), "compensator monotone per type");
+        assert!(
+            tau.iter().all(|&v| v > 0.0),
+            "compensator monotone per type"
+        );
         let (_, p) = ks_test_exp(tau).unwrap();
         assert!(p > 0.05, "true-param residuals should pass, p = {p}");
     }
@@ -219,11 +215,33 @@ fn fit_objectives_are_pure_under_underflow() {
     assert_eq!(obj(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -800.0]), 1e10); // beta underflow
     assert_eq!(obj(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 800.0]), 1e10); // overflow
     let (mu0, mu1) = (0.5 * 323.0 / T_BIV, 0.5 * 288.0 / T_BIV);
-    let x0 = [mu0.ln(), mu1.ln(), 0.25_f64.ln(), 0.25_f64.ln(), 0.25_f64.ln(), 0.25_f64.ln(), 0.0];
-    let want = -biv_loglik(&t, &k, T_BIV, &[mu0, mu1], &[[0.25, 0.25], [0.25, 0.25]], 1.0).unwrap();
+    let x0 = [
+        mu0.ln(),
+        mu1.ln(),
+        0.25_f64.ln(),
+        0.25_f64.ln(),
+        0.25_f64.ln(),
+        0.25_f64.ln(),
+        0.0,
+    ];
+    let want = -biv_loglik(
+        &t,
+        &k,
+        T_BIV,
+        &[mu0, mu1],
+        &[[0.25, 0.25], [0.25, 0.25]],
+        1.0,
+    )
+    .unwrap();
     assert!((obj(&x0) - want).abs() < 1e-12);
-    let res = nelder_mead(&obj, &[-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0], 1e-8, 1e-10, 5)
-        .unwrap();
+    let res = nelder_mead(
+        &obj,
+        &[-800.0, -800.0, 0.0, 0.0, 0.0, 0.0, -800.0],
+        1e-8,
+        1e-10,
+        5,
+    )
+    .unwrap();
     assert!(res.fval.is_finite());
     let tu = uni_times();
     let uobj = uni_fit_objective(&tu, T_UNI).unwrap();
@@ -278,7 +296,15 @@ fn single_event_paths() {
     assert!((uni_loglik(&t_end, 1.0, mu, alpha, beta).unwrap() - (mu.ln() - mu)).abs() < 1e-15);
     assert!((uni_residuals(&t_end, 1.0, mu, alpha, beta).unwrap()[0] - mu).abs() < 1e-15);
     assert!(fit_biv(&t_end, &[0], 1.0).is_err());
-    let ll = biv_loglik(&t_end, &[0], 1.0, &[0.2, 0.3], &[[0.1, 0.1], [0.1, 0.1]], 2.0).unwrap();
+    let ll = biv_loglik(
+        &t_end,
+        &[0],
+        1.0,
+        &[0.2, 0.3],
+        &[[0.1, 0.1], [0.1, 0.1]],
+        2.0,
+    )
+    .unwrap();
     assert!((ll - (0.2_f64.ln() - 0.5)).abs() < 1e-15);
 }
 
@@ -295,8 +321,14 @@ fn times_csv_round_trip_and_robustness() {
 
     let body = "t\n0.5\n1.25e0\n";
     let want = vec![0.5, 1.25];
-    assert_eq!(read_times_csv(&scratch("crlf.csv", &body.replace('\n', "\r\n"))).unwrap(), want);
-    assert_eq!(read_times_csv(&scratch("trail.csv", &format!("{body}\n"))).unwrap(), want);
+    assert_eq!(
+        read_times_csv(&scratch("crlf.csv", &body.replace('\n', "\r\n"))).unwrap(),
+        want
+    );
+    assert_eq!(
+        read_times_csv(&scratch("trail.csv", &format!("{body}\n"))).unwrap(),
+        want
+    );
     for (name, text) in [
         ("nan.csv", format!("{body}nan\n")),
         ("inf.csv", format!("{body}inf\n")),
@@ -320,7 +352,10 @@ fn times_csv_round_trip_and_robustness() {
         ("three.csv", format!("{mbody}1.5,1,\n")),
         ("mhdr.csv", "type,t\n0,0.5\n".to_string()),
     ] {
-        assert!(read_marked_times_csv(&scratch(name, &text)).is_err(), "{name}");
+        assert!(
+            read_marked_times_csv(&scratch(name, &text)).is_err(),
+            "{name}"
+        );
     }
     assert!(write_times_csv(&scratch("x.csv", ""), &[1.0, f64::NAN]).is_err());
     assert!(write_marked_times_csv(&scratch("y.csv", ""), &[1.0, 2.0], &[0, 2]).is_err());

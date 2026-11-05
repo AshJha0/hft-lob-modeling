@@ -87,9 +87,25 @@ pub fn generate_events(n_events: usize, seed: u64) -> Result<Vec<Event>> {
     // -- seed phase: 6 levels each side, size 10
     for i in 0..6 {
         let id = events.len() as i64 + 1;
-        emit(&mut book, &mut events, EventType::Limit, Side::Bid, REF_PRICE - 1 - i, 10, id)?;
+        emit(
+            &mut book,
+            &mut events,
+            EventType::Limit,
+            Side::Bid,
+            REF_PRICE - 1 - i,
+            10,
+            id,
+        )?;
         let id = events.len() as i64 + 1;
-        emit(&mut book, &mut events, EventType::Limit, Side::Ask, REF_PRICE + 1 + i, 10, id)?;
+        emit(
+            &mut book,
+            &mut events,
+            EventType::Limit,
+            Side::Ask,
+            REF_PRICE + 1 + i,
+            10,
+            id,
+        )?;
     }
 
     // -- stochastic phase
@@ -98,12 +114,12 @@ pub fn generate_events(n_events: usize, seed: u64) -> Result<Vec<Event>> {
         let nb = book.n_orders(Side::Bid) as f64;
         let ns = book.n_orders(Side::Ask) as f64;
         let rates = [
-            RATE_LIMIT,                   // limit buy
-            RATE_LIMIT,                   // limit sell
-            RATE_CANCEL_PER_ORDER * nb,   // cancel buy
-            RATE_CANCEL_PER_ORDER * ns,   // cancel sell
-            RATE_MARKET,                  // market buy
-            RATE_MARKET,                  // market sell
+            RATE_LIMIT,                 // limit buy
+            RATE_LIMIT,                 // limit sell
+            RATE_CANCEL_PER_ORDER * nb, // cancel buy
+            RATE_CANCEL_PER_ORDER * ns, // cancel sell
+            RATE_MARKET,                // market buy
+            RATE_MARKET,                // market sell
         ];
         let total: f64 = rates.iter().sum();
         let x = rng.uniform() * total;
@@ -118,7 +134,11 @@ pub fn generate_events(n_events: usize, seed: u64) -> Result<Vec<Event>> {
             0 | 1 => {
                 // limit order
                 let buy = kind == 0;
-                let opp_best = if buy { book.best_ask() } else { book.best_bid() };
+                let opp_best = if buy {
+                    book.best_ask()
+                } else {
+                    book.best_bid()
+                };
                 let u2 = rng.uniform();
                 let price = if u2 < P_AGGRESSIVE && opp_best.is_some() {
                     opp_best.expect("checked is_some")
@@ -134,7 +154,15 @@ pub fn generate_events(n_events: usize, seed: u64) -> Result<Vec<Event>> {
                 let price = price.max(1);
                 let size = 1 + rng.randint(5)? as i64;
                 let side = if buy { Side::Bid } else { Side::Ask };
-                emit(&mut book, &mut events, EventType::Limit, side, price, size, seq)?;
+                emit(
+                    &mut book,
+                    &mut events,
+                    EventType::Limit,
+                    side,
+                    price,
+                    size,
+                    seq,
+                )?;
             }
             2 | 3 => {
                 // cancel (rate is 0 when the side is empty, so ids is non-empty)
