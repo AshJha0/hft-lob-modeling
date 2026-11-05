@@ -1,0 +1,11 @@
+key,value
+best_bid,999
+best_ask,1000
+best_bid_size,30
+best_ask_size,2
+total_bid,30
+total_ask,7
+order_ids_bid,3
+order_ids_ask,4 11
+trades,4 1002 3 2 1000 20 9 1001 8 4 1002 2 7 1000 6 8 1000 1 8 1000 4
+last_ts_ns,34200000025500

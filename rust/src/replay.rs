@@ -77,6 +77,28 @@ pub struct Event {
     pub order_id: i64,
 }
 
+/// One event of schema v2: header
+/// `seq,ts_ns,type,side,price,size,order_id,new_order_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventV2 {
+    /// 1-based sequence number.
+    pub seq: i64,
+    /// Non-negative nanoseconds (0 when lifted from v1).
+    pub ts_ns: i64,
+    /// `L`, `C`, `M`, or `R` reduce, `U` replace, `E` execute.
+    pub etype: char,
+    /// Side (echoes the resting side for `C`/`R`/`U`/`E`).
+    pub side: Side,
+    /// Price in ticks (`L` and `U`; 0 otherwise).
+    pub price: i64,
+    /// `L`/`M` size; `R` size removed; `U` new size; `E` executed; `C` 0.
+    pub size: i64,
+    /// `L`: new id; `C`/`R`/`U`/`E`: resting id; `M`: 0.
+    pub order_id: i64,
+    /// `U`: replacement id; 0 otherwise.
+    pub new_order_id: i64,
+}
+
 /// Top-of-book state after each replayed event (vectors of length `n_events`).
 ///
 /// Sides that are empty at an event produce NaN in the price-derived fields
@@ -116,6 +138,7 @@ impl BookStates {
 }
 
 const HEADER: &str = "seq,type,side,price,size,order_id";
+const HEADER_V2: &str = "seq,ts_ns,type,side,price,size,order_id,new_order_id";
 
 /// Read an event stream CSV with the pinned header
 /// `seq,type,side,price,size,order_id` (rules: [`crate::csv`]).
@@ -171,6 +194,122 @@ pub fn write_events_csv(path: &str, events: &[Event]) -> Result<()> {
         .map_err(|e| LobError::Io(format!("{path}: {e}")))
 }
 
+/// Read a v2 event CSV, or a v1 file lifted with `ts_ns = 0`; the header
+/// selects the schema.
+///
+/// # Errors
+/// [`LobError::Io`] on file problems, [`LobError::Parse`] /
+/// [`LobError::InvalidInput`] on a bad header or row.
+pub fn read_events_v2_csv(path: &str) -> Result<Vec<EventV2>> {
+    let text = fs::read_to_string(path).map_err(|e| LobError::Io(format!("{path}: {e}")))?;
+    let first = text.split('\n').next().unwrap_or("");
+    if first.strip_suffix('\r').unwrap_or(first) != HEADER_V2 {
+        return Ok(read_events_csv(path)?
+            .iter()
+            .map(|e| EventV2 {
+                seq: e.seq,
+                ts_ns: 0,
+                etype: e.etype.code(),
+                side: e.side,
+                price: e.price,
+                size: e.size,
+                order_id: e.order_id,
+                new_order_id: 0,
+            })
+            .collect());
+    }
+    let lines = read_csv_lines(path, HEADER_V2)?;
+    let mut events = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        let context = format!("event row {}", i + 1);
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 8 {
+            return Err(LobError::Parse(format!(
+                "malformed {context}: expected 8 fields, got {}: {line:?}",
+                fields.len()
+            )));
+        }
+        let ts_ns = parse_int64_strict(fields[1], &context)?;
+        if ts_ns < 0 {
+            return Err(LobError::Parse(format!("negative ts_ns in {context}")));
+        }
+        if !matches!(fields[2], "L" | "C" | "M" | "R" | "U" | "E") {
+            return Err(LobError::InvalidInput(format!(
+                "unknown event type {:?} in {context}",
+                fields[2]
+            )));
+        }
+        events.push(EventV2 {
+            seq: parse_int64_strict(fields[0], &context)?,
+            ts_ns,
+            etype: fields[2].chars().next().expect("one-letter type"),
+            side: Side::from_code(fields[3])?,
+            price: parse_int64_strict(fields[4], &context)?,
+            size: parse_int64_strict(fields[5], &context)?,
+            order_id: parse_int64_strict(fields[6], &context)?,
+            new_order_id: parse_int64_strict(fields[7], &context)?,
+        });
+    }
+    Ok(events)
+}
+
+/// Write schema v2 events (`\n` line endings).
+///
+/// # Errors
+/// [`LobError::Io`] if the file cannot be written.
+pub fn write_events_v2_csv(path: &str, events: &[EventV2]) -> Result<()> {
+    let mut out = String::with_capacity(48 * (events.len() + 1));
+    out.push_str(HEADER_V2);
+    out.push('\n');
+    for e in events {
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{}\n",
+            e.seq,
+            e.ts_ns,
+            e.etype,
+            e.side.code(),
+            e.price,
+            e.size,
+            e.order_id,
+            e.new_order_id
+        ));
+    }
+    fs::write(path, out).map_err(|e| LobError::Io(format!("{path}: {e}")))
+}
+
+/// Apply one schema v2 event to the book.
+///
+/// # Errors
+/// An unknown event type, or any book-level validation error.
+pub fn apply_event_v2(book: &mut LimitOrderBook, event: &EventV2) -> Result<()> {
+    match event.etype {
+        'L' => {
+            book.limit_ticks(event.side, event.price, event.size, event.order_id)?;
+        }
+        'C' => {
+            book.cancel(event.order_id)?;
+        }
+        'M' => {
+            book.market(event.side, event.size)?;
+        }
+        'R' => {
+            book.reduce(event.order_id, event.size)?;
+        }
+        'U' => {
+            book.replace_ticks(event.order_id, event.new_order_id, event.price, event.size)?;
+        }
+        'E' => {
+            book.execute(event.order_id, event.size)?;
+        }
+        other => {
+            return Err(LobError::InvalidInput(format!(
+                "unknown event type {other:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Apply one event to the book.
 ///
 /// # Errors
@@ -197,6 +336,22 @@ pub fn apply_event(book: &mut LimitOrderBook, event: &Event) -> Result<()> {
 /// [`LobError::InvalidInput`] if the stream is empty, `depth_k == 0`, or an
 /// event is invalid.
 pub fn replay(events: &[Event], depth_k: usize) -> Result<BookStates> {
+    replay_with(events, depth_k, apply_event)
+}
+
+/// As [`replay`], for schema v2 events.
+///
+/// # Errors
+/// As [`replay`].
+pub fn replay_v2(events: &[EventV2], depth_k: usize) -> Result<BookStates> {
+    replay_with(events, depth_k, apply_event_v2)
+}
+
+fn replay_with<E>(
+    events: &[E],
+    depth_k: usize,
+    apply: fn(&mut LimitOrderBook, &E) -> Result<()>,
+) -> Result<BookStates> {
     if depth_k == 0 {
         return Err(LobError::InvalidInput(
             "depth_k must be a positive integer, got 0".to_string(),
@@ -219,7 +374,7 @@ pub fn replay(events: &[Event], depth_k: usize) -> Result<BookStates> {
     };
     let mut book = LimitOrderBook::with_options(1.0, false)?;
     for event in events {
-        apply_event(&mut book, event)?;
+        apply(&mut book, event)?;
         st.best_bid
             .push(book.best_bid().map_or(f64::NAN, |p| p as f64));
         st.best_ask

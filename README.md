@@ -175,6 +175,16 @@ the spread on every trade erases the gross PnL. See research/results.md.
 demo complete.
 ```
 
+## Round 2 additions
+
+These sit beside the pinned core. Only the book operations and the v2 event schema are in the four-language contract.
+
+- **L3 book operations and v2 events.** `reduce`, `execute`, `replace` and nanosecond timestamps in all four ports (`API_SPEC.md`). v1 files and goldens are unchanged.
+- **ITCH 5.0 parser** (`lobmod.feeds.itch50`, Python). Tested only on fixtures built by hand. It has **not** been run on a real file, and its message offsets have not yet been checked against the Nasdaq specification document.
+- **Execution simulator** (`lobmod.sim`, Python). Hawkes-driven reactive flow, informed traders, queue position, latency, fees and P&L attribution. It is uncalibrated: the parameters are assumed, so its P&L levels mean nothing. See [research/results_sim.md](research/results_sim.md).
+- **Richer Hawkes models** (`lobmod.research`). Multi-timescale and power-law kernels and seasonal baselines. See [research/results_models.md](research/results_models.md).
+- **FastBook** (C++ `cpp/fast/`, Rust `fast_book`). A preallocated book with O(1) cancel, tested against the reference book. Book-only timings on a noisy laptop are in [docs/LATENCY.md](docs/LATENCY.md); this is not wire-to-wire latency.
+
 ## Testing
 
 Each language runs three layers: the 18 golden cases below, the invariant and

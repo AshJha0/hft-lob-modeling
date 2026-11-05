@@ -388,3 +388,13 @@ Current test counts: see CI.
   book is built with `record_trades = false` or `clear_history()` is called;
   replay and the ZI generator use non-recording books. Java's `trades()` is
   an O(1) unmodifiable view, not a copy.
+
+## Layers added after v1.2.0
+
+The pinned core stays the reference. Three layers sit on it.
+
+- `lobmod.feeds` turns a venue feed into v2 events, and `BookIntegrityChecker` flags impossible book states.
+- `lobmod.research` holds analysis tools outside the golden contract.
+- `lobmod.sim` drives a real `LimitOrderBook` with reactive flow and clock-time latency, and attributes P&L.
+
+`FastBook` is a separate implementation for speed. It is not pinned by goldens; randomized differential tests hold it to the reference book, and prices outside its configured band return an error code.

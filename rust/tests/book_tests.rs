@@ -4,6 +4,7 @@
 
 mod common;
 
+use lobmod::replay::{apply_event_v2, read_events_v2_csv, replay_v2, write_events_v2_csv};
 use lobmod::{
     apply_event, generate_events, read_events_csv, replay, write_events_csv, EventType, Fill,
     Lcg64, LimitOrderBook, LobError, Side, MAX_SEED, MAX_TICKS,
@@ -579,4 +580,169 @@ fn rosenbrock_4d_iteration_count_is_pinned() {
     };
     let r = lobmod::nelder_mead_default(rosen, &[-1.2, 1.0, 0.7, 1.3]).unwrap();
     assert_eq!(r.n_iter, 308);
+}
+
+// ------------------------------------------------- L3 operations and schema v2
+
+fn three_bids() -> LimitOrderBook {
+    let mut b = book();
+    for (id, size) in [(1, 10), (2, 20), (3, 30)] {
+        b.limit(Side::Bid, 100.0, size, id).unwrap();
+    }
+    b
+}
+
+fn makers(fills: &[Fill]) -> Vec<i64> {
+    fills.iter().map(|f| f.maker_id).collect()
+}
+
+#[test]
+fn reduce_keeps_priority_and_full_reduce_removes() {
+    let mut b = three_bids();
+    assert_eq!(b.reduce(1, 4).unwrap(), 6);
+    assert_eq!(b.total_size(Side::Bid), 56);
+    assert_eq!(makers(&b.market(Side::Ask, 7).unwrap().0), [1, 2]);
+    assert_eq!(b.reduce(2, 19).unwrap(), 0);
+    assert!(!b.has_order(2));
+    b.reduce(3, 30).unwrap();
+    assert_eq!(b.best_bid(), None);
+    assert_eq!(b.total_size(Side::Bid), 0);
+}
+
+#[test]
+fn execute_named_order_out_of_queue_order() {
+    let mut b = three_bids();
+    let f = b.execute(2, 5).unwrap();
+    assert_eq!((f.maker_id, f.price, f.size), (2, 100, 5));
+    assert_eq!(b.trades, vec![f]);
+    assert_eq!(b.total_size(Side::Bid), 55);
+    b.execute(2, 15).unwrap();
+    assert!(!b.has_order(2));
+    assert_eq!(makers(&b.market(Side::Ask, 40).unwrap().0), [1, 3]);
+}
+
+#[test]
+fn replace_loses_priority_and_may_reuse_its_id() {
+    let mut b = three_bids();
+    assert_eq!(b.replace(1, 1, 100.0, 10).unwrap().1, 10);
+    assert_eq!(b.replace_ticks(2, 9, 100, 20).unwrap().1, 20);
+    assert!(!b.has_order(2));
+    assert_eq!(makers(&b.market(Side::Ask, 60).unwrap().0), [3, 1, 9]);
+}
+
+#[test]
+fn crossing_replace_executes() {
+    let mut b = book();
+    b.limit(Side::Ask, 101.0, 5, 1).unwrap();
+    b.limit(Side::Bid, 99.0, 8, 2).unwrap();
+    let (fills, rested) = b.replace(2, 3, 101.0, 8).unwrap();
+    assert_eq!(makers(&fills), [1]);
+    assert_eq!(rested, 3);
+    assert_eq!(b.best_bid(), Some(101));
+    assert_eq!(b.total_size(Side::Ask), 0);
+}
+
+#[test]
+fn l3_errors_leave_the_book_unchanged() {
+    let mut b = three_bids();
+    assert!(matches!(b.reduce(99, 1), Err(LobError::UnknownOrder(99))));
+    assert!(b.reduce(1, 11).is_err());
+    assert!(b.reduce(1, 0).is_err());
+    assert!(matches!(b.execute(99, 1), Err(LobError::UnknownOrder(99))));
+    assert!(b.execute(1, 11).is_err());
+    assert!(b.execute(1, -1).is_err());
+    assert!(matches!(
+        b.replace(99, 5, 100.0, 1),
+        Err(LobError::UnknownOrder(99))
+    ));
+    assert!(b.replace(1, 2, 100.0, 1).is_err());
+    assert!(b.replace(1, 5, 100.5, 1).is_err());
+    assert!(b.replace(1, 5, 100.0, 0).is_err());
+    assert!(b.replace_ticks(1, 5, 0, 1).is_err());
+    assert_eq!(b.total_size(Side::Bid), 60);
+    assert_eq!(b.n_orders(Side::Bid), 3);
+    assert_eq!(makers(&b.market(Side::Ask, 60).unwrap().0), [1, 2, 3]);
+}
+
+#[test]
+fn replace_counts_capacity_with_the_old_order_gone() {
+    let mut b = book();
+    b.limit_ticks(Side::Bid, 100, MAX_TICKS, 1).unwrap();
+    b.replace_ticks(1, 2, 90, MAX_TICKS).unwrap();
+    assert_eq!(b.total_size(Side::Bid), MAX_TICKS);
+    b.reduce(2, 1).unwrap();
+    b.limit_ticks(Side::Bid, 80, 1, 3).unwrap();
+    assert!(b.replace_ticks(3, 4, 80, 2).is_err());
+    assert_eq!(b.total_size(Side::Bid), MAX_TICKS);
+    assert!(b.has_order(3));
+}
+
+fn expected_v2() -> std::collections::HashMap<String, Vec<i64>> {
+    let path = common::data_path("lob_events_v2_expected.csv");
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let (k, v) = l.split_once(',').unwrap();
+            let values = v.split(' ').map(|x| x.parse().unwrap()).collect();
+            (k.to_string(), values)
+        })
+        .collect()
+}
+
+#[test]
+fn v2_fixture_reproduces_expected_book() {
+    let events = read_events_v2_csv(&common::data_path("lob_events_v2.csv")).unwrap();
+    let want = expected_v2();
+    let mut b = book();
+    for e in &events {
+        apply_event_v2(&mut b, e).unwrap();
+    }
+    assert_eq!(b.best_bid(), Some(want["best_bid"][0]));
+    assert_eq!(b.best_ask(), Some(want["best_ask"][0]));
+    assert_eq!(b.best_bid_size(), want["best_bid_size"][0]);
+    assert_eq!(b.best_ask_size(), want["best_ask_size"][0]);
+    assert_eq!(b.total_size(Side::Bid), want["total_bid"][0]);
+    assert_eq!(b.total_size(Side::Ask), want["total_ask"][0]);
+    assert_eq!(b.order_ids(Side::Bid), want["order_ids_bid"]);
+    assert_eq!(b.order_ids(Side::Ask), want["order_ids_ask"]);
+    let trades: Vec<i64> = b
+        .trades
+        .iter()
+        .flat_map(|f| [f.maker_id, f.price, f.size])
+        .collect();
+    assert_eq!(trades, want["trades"]);
+    assert_eq!(events.last().unwrap().ts_ns, want["last_ts_ns"][0]);
+    let st = replay_v2(&events, 3).unwrap();
+    assert_eq!(st.len(), 17);
+    assert_eq!(*st.mid.last().unwrap(), 999.5);
+}
+
+#[test]
+fn v2_reader_lifts_v1_and_round_trips() {
+    let lifted = read_events_v2_csv(&common::data_path("lob_events.csv")).unwrap();
+    assert_eq!(lifted.len(), 5000);
+    assert!(lifted.iter().all(|e| e.ts_ns == 0));
+    let events = read_events_v2_csv(&common::data_path("lob_events_v2.csv")).unwrap();
+    let path = std::env::temp_dir().join("lobmod_v2_roundtrip.csv");
+    let path = path.to_str().unwrap();
+    write_events_v2_csv(path, &events).unwrap();
+    assert_eq!(read_events_v2_csv(path).unwrap(), events);
+}
+
+#[test]
+fn v2_reader_rejects_bad_rows() {
+    let path = std::env::temp_dir().join("lobmod_v2_bad.csv");
+    let path = path.to_str().unwrap();
+    for row in [
+        "1,-1,L,B,100,1,1,0",
+        "1,0,Z,B,100,1,1,0",
+        "1,0,L,B,100,1,1",
+        "1,0,L,B,100,1,1,0,",
+    ] {
+        let text = format!("seq,ts_ns,type,side,price,size,order_id,new_order_id\n{row}\n");
+        std::fs::write(path, text).unwrap();
+        assert!(read_events_v2_csv(path).is_err(), "{row}");
+    }
 }

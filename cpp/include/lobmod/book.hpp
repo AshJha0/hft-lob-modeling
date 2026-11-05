@@ -53,7 +53,7 @@ struct Fill {
 
 /// One entry of the book's event log.
 struct BookLogEntry {
-    char etype;            ///< 'L', 'C' or 'M'
+    char etype;            ///< 'L', 'C', 'M', 'R' or 'E' (replace logs 'C' then 'L')
     char side;             ///< 'B' or 'S'
     std::int64_t price;    ///< price in ticks (0 for 'M'; cancelled level for 'C')
     std::int64_t size;     ///< submitted size ('L'/'M'); removed size for 'C'
@@ -133,6 +133,32 @@ public:
     ///         already cancelled, or fully filled).
     std::int64_t cancel(std::int64_t order_id);
 
+    /// Take by_size off a resting order, keeping its queue position; the whole
+    /// remaining size removes it.  \return the size left resting.
+    /// \throws std::invalid_argument on an unknown id, a bad size, or by_size
+    ///         above the remaining size (book unchanged).
+    std::int64_t reduce(std::int64_t order_id, std::int64_t by_size);
+
+    /// Fill a named resting order at its own price, partly or fully, keeping
+    /// its queue position on a partial fill.  \return the Fill, also recorded
+    /// in trades().
+    /// \throws std::invalid_argument as reduce().
+    Fill execute(std::int64_t order_id, std::int64_t size);
+
+    /// Swap a resting order for new_id on the same side at the tail of the new
+    /// level, losing priority.  Equals cancel then limit_ticks, but every check
+    /// runs first; a crossing price executes.  new_id may equal order_id.
+    /// \throws std::invalid_argument on an unknown order_id, new_id live on
+    ///         another order, a bad price or size, or a size taking the side
+    ///         above kMaxTicks once the old order has gone (book unchanged).
+    std::pair<std::vector<Fill>, std::int64_t>
+    replace(std::int64_t order_id, std::int64_t new_id, double price, std::int64_t size);
+
+    /// replace() priced directly in ticks.
+    std::pair<std::vector<Fill>, std::int64_t>
+    replace_ticks(std::int64_t order_id, std::int64_t new_id, std::int64_t price_ticks,
+                  std::int64_t size);
+
     /// Submit a market order that walks the opposite side.  A market order
     /// bigger than the opposite depth fills what exists; the remainder is
     /// *reported* in the second element — not an error.
@@ -164,6 +190,14 @@ private:
     static void check_size(std::int64_t size);
     std::pair<std::vector<Fill>, std::int64_t>
     match(char side, std::int64_t size, const std::int64_t* limit_ticks);
+
+    /// Take qty off a live order in place; returns what is left of it.
+    struct Shrunk {
+        char side;
+        std::int64_t ticks;
+        std::int64_t left;
+    };
+    Shrunk shrink(std::int64_t order_id, std::int64_t qty, const char* what);
 
     double tick_size_;
     bool record_trades_;

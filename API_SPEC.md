@@ -96,6 +96,28 @@ Draw order matters; consume uniforms exactly as the algorithms below state.
   no price bound. If `size` exceeds total opposite depth, fill everything
   available and **report** the remainder in `unfilled` — not an error.
 
+* **`reduce(order_id, by_size) -> remaining_size`** takes `by_size` off a
+  resting order, which **keeps its queue position**. `by_size` equal to the
+  remaining size removes the order (result 0).
+* **`execute(order_id, size) -> fill`** fills a named resting order at its own
+  price, partly or fully, as L3 feeds report. No aggressor walks the book, and
+  the order keeps its queue position on a partial fill, even with orders ahead
+  of it. The fill is recorded in `trades` like any other.
+* **`replace(order_id, new_id, price, size) -> (fills, rested_size)`**, with
+  `replace_ticks` taking the tick count as `limit_ticks` does, swaps a resting
+  order for `new_id` on the same side, **losing priority**: it behaves as
+  `cancel(order_id)` then `limit_ticks(side, ticks, size, new_id)`, so the new
+  order joins the tail of its level even at an unchanged price and size, and a
+  crossing price executes. `new_id` may equal `order_id`. Where a `log` exists
+  it shows those two entries; `reduce` and `execute` log types `R` and `E`.
+
+Error rules for these three: an unknown id, a size that is not a positive
+integer up to `MAX_TICKS`, a `by_size` or `size` above the remaining size
+(`reduce`, `execute`), a `new_id` live on another order, a bad price, or a
+replace size taking the side above `MAX_TICKS` with the old order removed, is
+an **error raised before any mutation**, so the book is unchanged. Each keeps
+the per-side running totals exact.
+
 Each fill records `(maker_id, price_ticks, fill_size)` in execution order.
 
 ### 2.3 Derived quantities (`NaN` guarded — never an error)
@@ -160,6 +182,40 @@ tick-size parameter), recording **after each event**: best bid/ask price
 (NaN if none), best-level sizes (0 if none), depth over top `k = 3` levels
 per side (`depth_k` positive integer, error otherwise), mid, microprice,
 spread. Replay books do not record history.
+
+### 2.4a Event schema v2 (optional; `data/lob_events_v2.csv`)
+
+A separate type `EventV2` and `read_events_v2_csv` / `write_events_v2_csv` /
+`apply_event_v2` / `replay_v2` (Java: `readEventsV2Csv` and so on) carry L3
+flow. The v1 type, functions and files above are unchanged. Header exactly
+`seq,ts_ns,type,side,price,size,order_id,new_order_id`.
+
+| type | meaning | price | size | order_id | new_order_id |
+|---|---|---|---|---|---|
+| `L` | limit add | ticks | size | new id | 0 |
+| `C` | cancel | 0 | 0 | resting id | 0 |
+| `M` | market | 0 | size | 0 | 0 |
+| `R` | reduce | 0 | size removed | resting id | 0 |
+| `U` | replace | new ticks | new size | resting id | replacement id |
+| `E` | execute | 0 | size executed | resting id | 0 |
+
+`side` echoes the resting side for `C`, `R`, `U`, `E` and replay ignores it
+there. `ts_ns` is a non-negative integer in nanoseconds; its meaning (for ITCH,
+since midnight) belongs to the source, and order is not validated. The pinned
+CSV rules of section 2.4 apply with eight fields and `type` in
+`{L, C, M, R, U, E}`. The reader selects the schema from the header: a v1 file
+comes back as `EventV2` rows with `ts_ns = 0` and `new_order_id = 0`, and any
+other header is an error. `replay_v2` records exactly what replay records.
+
+`data/lob_events_v2.csv` is a 17-event hand-written fixture covering every
+type, and `data/lob_events_v2_expected.csv` (header `key,value`, lists
+space-separated) pins its final book and its fills as flat
+`maker price size` triples, on a recording book. Both are written by hand, not
+by `generate_data.py`.
+
+`lobmod.feeds.itch50` (Python only) maps Nasdaq TotalView-ITCH 5.0 to this
+schema. It has been checked only against byte fixtures built from the public
+specification, not a real file.
 
 ### 2.5 Zero-intelligence generator (produces `lob_events.csv`, seed 20240613)
 
@@ -448,6 +504,8 @@ decreasing); the majority baseline then wins — not an error.
   beta=1.6, T=1000, seed=101)`; 1211 events; `%.17g` formatting.
 * `hawkes_biv.csv` — header `t,type`; `simulate_biv(mu=(0.3, 0.3),
   alpha=[[0.6, 0.3], [0.25, 0.5]], beta=2.0, T=600, seed=33)`; 611 events.
+* `lob_events_v2.csv`, `lob_events_v2_expected.csv` — hand-written parity
+  fixture of section 2.4a (not regenerated).
 * `dgp_params.json` — the true parameters/seeds above plus the pinned
   loglik evaluation points.
 * `features_config.json` — section 6 values.
@@ -502,6 +560,14 @@ price 5000000.004 errors; ratio `2^52` errors, `2^52 - 1` rests; `tick_size =
 1e-300`, price 1e308 errors); `mid` at 5e18 / 5e18+1, at 2^53+1 / 2^53+2 and at
 2^62 / 2^62+1025 (result 2^62+1024); side capacity (a second 9e18 add errors
 with the book unchanged; capacity returns after cancel and after a fill);
+`reduce` keeps priority and at full size removes the order; `execute` partial
+and full at the resting price, recorded as a fill, out of queue order;
+`replace` loses priority at an unchanged price, may reuse its id, executes when
+crossing; each rejects unknown ids and oversizes with the book and totals
+unchanged, and a replace counts capacity with the old order gone (a lone 9e18
+order replaces to 9e18; with a second order on the side it cannot); the v2
+fixture reproduces its expected book, v1 files read through the v2 reader, a
+v2 file round-trips, and a negative `ts_ns` or unknown type is rejected;
 `geometric(1e-300)` errors; Rosenbrock 4-D from (-1.2, 1, 0.7, 1.3) takes 308
 iterations; CSV robustness (CRLF
 and trailing blank line accepted; trailing comma, non-integer field,

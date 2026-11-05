@@ -5,6 +5,15 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reduce`, `execute`, `replace` and a v2 event schema with nanosecond timestamps in all four ports.
+- `lobmod.feeds.itch50` parser and book-integrity checker, fixture-tested only.
+- `lobmod.sim` execution simulator with latency, queues, informed flow and P&L attribution.
+- Multi-exponential and power-law Hawkes kernels, seasonal baselines, cost-aware labels and a boosted-tree baseline in `lobmod.research`.
+- `FastBook` in C++ and Rust, benchmarks and `docs/LATENCY.md`.
+- Naive-model property tests in Rust and Java; libFuzzer harnesses in `fuzz/`, not yet in CI.
+
 ## [1.2.0] - 2026-11-05
 
 ### Added

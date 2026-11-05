@@ -24,6 +24,13 @@ CSV rules (pinned, identical in every port)
 :func:`replay` takes no tick size: the book it drives always has
 ``tick_size = 1`` and events are applied through
 :meth:`~lobmod.book.LimitOrderBook.limit_ticks`.
+
+Schema v2 (optional, separate type)
+-----------------------------------
+:class:`EventV2` adds a nanosecond timestamp and the L3 types ``R``, ``U`` and
+``E``, under the header ``seq,ts_ns,type,side,price,size,order_id,new_order_id``.
+:func:`read_events_v2_csv` detects the header, so it also reads v1 files, with
+``ts_ns = 0``.  :func:`read_events_csv` and v1 files are unchanged.
 """
 
 from __future__ import annotations
@@ -32,7 +39,7 @@ import csv
 import math
 import re
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Callable, Iterable, List, Sequence, TypeVar
 
 import numpy as np
 
@@ -64,6 +71,33 @@ class Event:
     order_id: int
 
 
+@dataclass(frozen=True)
+class EventV2:
+    """One order-flow event of schema v2.
+
+    Attributes:
+        seq: 1-based sequence number.
+        ts_ns: non-negative timestamp in nanoseconds (0 when lifted from v1).
+        etype: 'L', 'C', 'M' as in :class:`Event`, or 'R' (reduce), 'U'
+            (replace), 'E' (execute a named resting order).
+        side: 'B' or 'S' (for 'C', 'R', 'U', 'E' it echoes the resting side).
+        price: price in ticks ('L' and 'U'; 0 otherwise).
+        size: 'L'/'M' order size; 'R' size removed; 'U' new size; 'E' size
+            executed; 0 for 'C'.
+        order_id: 'L' new id; 'C'/'R'/'U'/'E' id of the resting order; 'M' 0.
+        new_order_id: 'U' replacement id; 0 otherwise.
+    """
+
+    seq: int
+    ts_ns: int
+    etype: str
+    side: str
+    price: int
+    size: int
+    order_id: int
+    new_order_id: int = 0
+
+
 @dataclass
 class BookStates:
     """Top-of-book state after each replayed event (arrays of length n_events).
@@ -90,6 +124,10 @@ _FIELDS = ["seq", "type", "side", "price", "size", "order_id"]
 _HEADER = ",".join(_FIELDS)
 _EVENT_TYPES = ("L", "C", "M")
 _SIDES = ("B", "S")
+_FIELDS_V2 = ["seq", "ts_ns", "type", "side", "price", "size", "order_id", "new_order_id"]
+_HEADER_V2 = ",".join(_FIELDS_V2)
+_EVENT_TYPES_V2 = ("L", "C", "M", "R", "U", "E")
+_E = TypeVar("_E")
 
 
 def parse_int64(field: str, context: str) -> int:
@@ -167,6 +205,61 @@ def read_events_csv(path: str) -> List[Event]:
     return events
 
 
+def write_events_v2_csv(path: str, events: Iterable[EventV2]) -> None:
+    """Write schema v2 events with the header ``seq,ts_ns,type,side,price,size,order_id,new_order_id``."""
+    with open(path, "w", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(_FIELDS_V2)
+        for e in events:
+            writer.writerow(
+                [e.seq, e.ts_ns, e.etype, e.side, e.price, e.size, e.order_id, e.new_order_id]
+            )
+
+
+def read_events_v2_csv(path: str) -> List[EventV2]:
+    """Read a v2 event CSV, or a v1 file lifted to :class:`EventV2` with ``ts_ns = 0``.
+
+    The header selects the schema.  The pinned CSV rules apply, with eight
+    fields per row, ``type`` one of ``L C M R U E`` and ``ts_ns >= 0``.
+
+    Raises:
+        ValueError: on a header matching neither schema, or a malformed row.
+    """
+    with open(path, newline="", encoding="utf-8") as fh:
+        first = fh.readline().rstrip("\n")
+    if (first[:-1] if first.endswith("\r") else first) != _HEADER_V2:
+        return [
+            EventV2(e.seq, 0, e.etype, e.side, e.price, e.size, e.order_id, 0)
+            for e in read_events_csv(path)
+        ]
+    events: List[EventV2] = []
+    for i, line in enumerate(read_csv_lines(path, _HEADER_V2)):
+        row = line.split(",")
+        context = f"event row {i + 1}"
+        if len(row) != 8:
+            raise ValueError(f"malformed {context}: expected 8 fields, got {len(row)}: {line!r}")
+        if row[2] not in _EVENT_TYPES_V2:
+            raise ValueError(f"unknown event type {row[2]!r} in {context}")
+        if row[3] not in _SIDES:
+            raise ValueError(f"side must be 'B' or 'S', got {row[3]!r} in {context}")
+        ts_ns = parse_int64(row[1], context)
+        if ts_ns < 0:
+            raise ValueError(f"negative ts_ns {ts_ns} in {context}")
+        events.append(
+            EventV2(
+                seq=parse_int64(row[0], context),
+                ts_ns=ts_ns,
+                etype=row[2],
+                side=row[3],
+                price=parse_int64(row[4], context),
+                size=parse_int64(row[5], context),
+                order_id=parse_int64(row[6], context),
+                new_order_id=parse_int64(row[7], context),
+            )
+        )
+    return events
+
+
 def apply_event(book: LimitOrderBook, event: Event) -> None:
     """Apply one event to the book (``event.price`` is a tick count).
 
@@ -180,6 +273,28 @@ def apply_event(book: LimitOrderBook, event: Event) -> None:
         book.cancel(event.order_id)
     elif event.etype == "M":
         book.market(event.side, event.size)
+    else:
+        raise ValueError(f"unknown event type {event.etype!r}")
+
+
+def apply_event_v2(book: LimitOrderBook, event: EventV2) -> None:
+    """Apply one schema v2 event to the book (``event.price`` is a tick count).
+
+    Raises:
+        ValueError: unknown event type, or any book-level validation error.
+    """
+    if event.etype == "L":
+        book.limit_ticks(event.side, event.price, event.size, event.order_id)
+    elif event.etype == "C":
+        book.cancel(event.order_id)
+    elif event.etype == "M":
+        book.market(event.side, event.size)
+    elif event.etype == "R":
+        book.reduce(event.order_id, event.size)
+    elif event.etype == "U":
+        book.replace_ticks(event.order_id, event.new_order_id, event.price, event.size)
+    elif event.etype == "E":
+        book.execute(event.order_id, event.size)
     else:
         raise ValueError(f"unknown event type {event.etype!r}")
 
@@ -202,6 +317,17 @@ def replay(events: Sequence[Event], depth_k: int = 3) -> BookStates:
         ValueError: if the stream is empty, ``depth_k`` is invalid, or an
             event is invalid.
     """
+    return _replay_with(events, depth_k, apply_event)
+
+
+def replay_v2(events: Sequence[EventV2], depth_k: int = 3) -> BookStates:
+    """As :func:`replay`, for schema v2 events."""
+    return _replay_with(events, depth_k, apply_event_v2)
+
+
+def _replay_with(
+    events: Sequence[_E], depth_k: int, apply: Callable[[LimitOrderBook, _E], None]
+) -> BookStates:
     depth_k = as_positive_int("depth_k", depth_k)
     if len(events) == 0:
         raise ValueError("event stream is empty")
@@ -209,7 +335,7 @@ def replay(events: Sequence[Event], depth_k: int = 3) -> BookStates:
     st = BookStates(*(np.empty(n) for _ in range(9)))
     book = LimitOrderBook(tick_size=1.0, record_trades=False)
     for i, event in enumerate(events):
-        apply_event(book, event)
+        apply(book, event)
         b, a = book.best_bid(), book.best_ask()
         st.best_bid[i] = math.nan if b is None else float(b)
         st.best_ask[i] = math.nan if a is None else float(a)

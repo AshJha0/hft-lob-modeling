@@ -493,4 +493,115 @@ public final class LimitOrderBook {
         checkSize(size);
         return match(side, size, false, 0L);
     }
+
+    /** Takes {@code qty} off a live order in place and returns the size left. */
+    private long shrink(long orderId, long qty, String what) {
+        checkSize(qty);
+        Location ref = orders.get(orderId);
+        if (ref == null) {
+            throw new IllegalArgumentException(what + " of unknown order_id " + orderId);
+        }
+        TreeMap<Long, ArrayDeque<Order>> levels = ref.side() == BUY ? bids : asks;
+        ArrayDeque<Order> queue = levels.get(ref.ticks());
+        Order order = findOrder(queue, orderId);
+        if (qty > order.size) {
+            throw new IllegalArgumentException(what + " of " + qty + " exceeds remaining size "
+                    + order.size + " of order_id " + orderId);
+        }
+        order.size -= qty;
+        if (order.size == 0) {
+            queue.remove(order);
+            orders.remove(orderId);
+            if (queue.isEmpty()) {
+                levels.remove(ref.ticks());
+            }
+        }
+        if (ref.side() == BUY) {
+            bidTotal -= qty;
+        } else {
+            askTotal -= qty;
+        }
+        return order.size;
+    }
+
+    private static Order findOrder(ArrayDeque<Order> queue, long orderId) {
+        for (Order o : queue) {
+            if (o.id == orderId) {
+                return o;
+            }
+        }
+        throw new IllegalStateException("live order " + orderId + " is not queued");
+    }
+
+    /**
+     * Takes {@code bySize} off a resting order, keeping its queue position;
+     * the whole remaining size removes it.
+     *
+     * @return the size left resting
+     * @throws IllegalArgumentException on an unknown id, a bad size, or
+     *     {@code bySize} above the remaining size (book unchanged)
+     */
+    public long reduce(long orderId, long bySize) {
+        return shrink(orderId, bySize, "reduce");
+    }
+
+    /**
+     * Fills a named resting order at its own price, partly or fully, keeping
+     * its queue position on a partial fill.
+     *
+     * @return the fill, also recorded in {@link #trades()}
+     * @throws IllegalArgumentException as {@link #reduce}
+     */
+    public Fill execute(long orderId, long size) {
+        Location ref = orders.get(orderId);
+        shrink(orderId, size, "execute");
+        Fill fill = new Fill(orderId, ref.ticks(), size);
+        if (recordTrades) {
+            trades.add(fill);
+        }
+        return fill;
+    }
+
+    /**
+     * {@link #replaceTicks} priced in currency units.
+     *
+     * @throws IllegalArgumentException as {@link #replaceTicks}, plus the
+     *     price rules of {@link #limit}
+     */
+    public ExecResult replace(long orderId, long newId, double price, long size) {
+        return replaceTicks(orderId, newId, toTicks(price), size);
+    }
+
+    /**
+     * Swaps a resting order for {@code newId} on the same side at the tail of
+     * the new level, losing priority. Equals cancel then {@link #limitTicks},
+     * but every check runs first; a crossing price executes. {@code newId}
+     * may equal {@code orderId}.
+     *
+     * @return fills plus the rested size
+     * @throws IllegalArgumentException on an unknown {@code orderId},
+     *     {@code newId} live on another order, a bad price or size, or a size
+     *     taking the side above {@code MAX_TICKS} once the old order has gone
+     *     (book unchanged)
+     */
+    public ExecResult replaceTicks(long orderId, long newId, long priceTicks, long size) {
+        checkSize(size);
+        long ticks = checkTicks(priceTicks);
+        Location ref = orders.get(orderId);
+        if (ref == null) {
+            throw new IllegalArgumentException("replace of unknown order_id " + orderId);
+        }
+        if (newId != orderId && orders.containsKey(newId)) {
+            throw new IllegalArgumentException(
+                    "order_id " + newId + " is already live in the book");
+        }
+        char side = ref.side();
+        long oldSize = findOrder((side == BUY ? bids : asks).get(ref.ticks()), orderId).size;
+        if (size > MAX_TICKS - (totalSize(side) - oldSize)) {
+            throw new IllegalArgumentException("size " + size + " would take side " + side
+                    + " total resting size above MAX_TICKS");
+        }
+        cancel(orderId);
+        return limitTicks(side, ticks, size, newId);
+    }
 }
