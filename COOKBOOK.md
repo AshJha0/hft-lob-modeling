@@ -1,9 +1,10 @@
 # COOKBOOK — `lobmod` recipes
 
-Task-oriented recipes in all four languages. **Every snippet below compiles
-and runs against the real library** — they are extracted and executed as part
-of the review checklist (see "Verifying the snippets" at the end). Paths
-assume the bundled `../data/` files relative to the language directory.
+Task-oriented recipes. Recipes 1-13 cover all four languages. Recipes 14-19
+are Python only because those layers are, and recipe 20 is C++ and Rust. The
+snippets are extracted and executed as part of the review checklist, and
+"Verifying the snippets" at the end says what was run and how. Paths assume the
+bundled `../data/` files relative to the language directory.
 
 Conventions, so the snippets stay short:
 
@@ -780,11 +781,359 @@ System.out.printf("gross=%f net=%f trades=%d%n", pnl.gross(), pnl.net(), pnl.nTr
 
 ---
 
+## 13. How do I reduce, replace and execute orders, and replay a v2 event file?
+
+`reduce` takes size off and keeps the order's queue place. `replace` is a new
+id at the tail of the new level, so priority is lost. `execute` fills a named
+order at its own price. The file `data/lob_events_v2.csv` is a 17-event fixture
+with nanosecond timestamps. `read_events_v2_csv` also reads a v1 file, with
+`ts_ns = 0`.
+
+**Python**
+
+```python
+from lobmod import LimitOrderBook
+from lobmod.replay import EventV2, apply_event_v2, read_events_v2_csv, replay_v2
+
+book = LimitOrderBook(tick_size=1.0)
+book.limit_ticks("B", 100, 10, 1)
+book.limit_ticks("B", 100, 5, 2)
+print(book.reduce(1, 4))                  # 6: size left, id 1 keeps its place
+print(book.order_ids("B"))                # [1, 2]
+print(book.execute(1, 2))                 # Fill(maker_id=1, price=100, size=2)
+print(book.replace_ticks(1, 3, 100, 4))   # ([], 4): id 3, back of the queue
+print(book.order_ids("B"))                # [2, 3]
+apply_event_v2(book, EventV2(1, 1_000, "R", "B", 0, 1, 2))   # reduce id 2 by 1
+print(book.best_bid_size())               # 8
+
+events = read_events_v2_csv("../data/lob_events_v2.csv")
+states = replay_v2(events)
+print(len(events), events[0].ts_ns)       # 17 34200000001500
+print(states.best_bid[-1], states.best_ask[-1])   # 999.0 1000.0
+```
+
+**C++**
+
+```cpp
+lobmod::LimitOrderBook book(1.0);
+book.limit_ticks('B', 100, 10, 1);
+book.limit_ticks('B', 100, 5, 2);
+std::cout << book.reduce(1, 4) << "\n";                  // 6
+lobmod::Fill f = book.execute(1, 2);
+std::cout << f.price << " " << f.size << "\n";           // 100 2
+auto [fills, rested] = book.replace_ticks(1, 3, 100, 4);
+std::cout << fills.size() << " " << rested << "\n";      // 0 4
+std::cout << book.order_ids('B')[0] << "\n";             // 2
+lobmod::apply_event_v2(book, lobmod::EventV2{1, 1000, 'R', 'B', 0, 1, 2, 0});
+std::cout << book.best_bid_size() << "\n";               // 8
+
+auto events = lobmod::read_events_v2_csv("../data/lob_events_v2.csv");
+auto states = lobmod::replay_v2(events);
+std::cout << events.size() << " " << states.best_bid.back() << " "
+          << states.best_ask.back() << "\n";             // 17 999 1000
+```
+
+**Rust**
+
+```rust
+use lobmod::replay::{apply_event_v2, read_events_v2_csv, replay_v2, EventV2};
+use lobmod::{LimitOrderBook, Side};
+
+let mut book = LimitOrderBook::new(1.0)?;
+book.limit_ticks(Side::Bid, 100, 10, 1)?;
+book.limit_ticks(Side::Bid, 100, 5, 2)?;
+println!("{}", book.reduce(1, 4)?);                      // 6
+let f = book.execute(1, 2)?;
+println!("{} {}", f.price, f.size);                      // 100 2
+let (fills, rested) = book.replace_ticks(1, 3, 100, 4)?;
+println!("{} {}", fills.len(), rested);                  // 0 4
+println!("{:?}", book.order_ids(Side::Bid));             // [2, 3]
+let ev = EventV2 { seq: 1, ts_ns: 1000, etype: 'R', side: Side::Bid, price: 0,
+                   size: 1, order_id: 2, new_order_id: 0 };
+apply_event_v2(&mut book, &ev)?;
+println!("{}", book.best_bid_size());                    // 8
+
+let events = read_events_v2_csv("../data/lob_events_v2.csv")?;
+let states = replay_v2(&events, 3)?;
+println!("{} {} {}", events.len(), states.best_bid.last().unwrap(),
+         states.best_ask.last().unwrap());               // 17 999 1000
+```
+
+**Java**
+
+```java
+LimitOrderBook book = new LimitOrderBook(1.0);
+book.limitTicks('B', 100, 10, 1);
+book.limitTicks('B', 100, 5, 2);
+System.out.println(book.reduce(1, 4));                   // 6
+Fill f = book.execute(1, 2);
+System.out.println(f.price() + " " + f.size());          // 100 2
+LimitOrderBook.ExecResult r = book.replaceTicks(1, 3, 100, 4);
+System.out.println(r.fills().size() + " " + r.remainder()); // 0 4
+System.out.println(book.orderIds('B')[0]);               // 2
+Replay.applyEventV2(book, new EventV2(1, 1000, 'R', 'B', 0, 1, 2, 0));
+System.out.println(book.bestBidSize());                  // 8
+
+List<EventV2> events = Replay.readEventsV2Csv(Path.of("../data/lob_events_v2.csv"));
+BookStates st = Replay.replayV2(events, 3);
+System.out.println(events.size() + " " + st.bestBid()[events.size() - 1]); // 17 999.0
+```
+
+## 14. How do I run the ITCH 5.0 parser on a small byte fixture?
+
+The parser is Python only and has been tested on hand-built fixtures. This
+recipe builds one in memory: a directory message, two adds, a partial cancel,
+an execution and a replace. Prices have four implied decimals, so 1,000,000
+is 100.0000 and the raw value is the tick count. Events that refer to a resting
+order by id carry price 0.
+
+**Python**
+
+```python
+import io
+import struct
+
+from lobmod.feeds import BookIntegrityChecker, FeedEvent, Itch50Parser
+
+def head(kind, ts_ns, locate=1):
+    return kind + struct.pack(">HH", locate, 0) + ts_ns.to_bytes(6, "big")
+
+def frame(msg):
+    return struct.pack(">H", len(msg)) + msg
+
+stock = b"TEST    "
+messages = [
+    head(b"R", 1) + stock + b"Q" + bytes(19),                                 # directory
+    head(b"A", 2) + struct.pack(">QcI", 1, b"B", 100) + stock + struct.pack(">I", 1_000_000),
+    head(b"A", 3) + struct.pack(">QcI", 2, b"S", 50) + stock + struct.pack(">I", 1_000_100),
+    head(b"X", 4) + struct.pack(">QI", 1, 30),                                # cancel 30
+    head(b"E", 5) + struct.pack(">QIQ", 1, 20, 77),                           # execute 20
+    head(b"U", 6) + struct.pack(">QQII", 2, 3, 40, 1_000_200),                # replace 2 -> 3
+]
+stream = io.BytesIO(b"".join(map(frame, messages)))
+
+parser = Itch50Parser(symbols=["TEST"])       # strict: any anomaly raises ItchError
+checker = BookIntegrityChecker()
+for item in parser.parse(stream):
+    if isinstance(item, FeedEvent):
+        checker.apply(item.event)
+        print(item.event.etype, item.event.side, item.event.price, item.event.size)
+# L B 1000000 100 / L S 1000100 50 / R B 0 30 / E B 0 20 / U S 1000200 40
+
+print(checker.book.best_bid(), checker.book.best_bid_size())   # 1000000 50
+print(checker.book.best_ask(), checker.book.best_ask_size())   # 1000200 40
+print(checker.verify())                                        # (1, 1) orders per side
+print(dict(parser.stats))                                      # {'messages': 6}
+```
+
+## 15. How do I get standard errors and a valid goodness-of-fit p-value?
+
+`lobmod.research` is Python only and outside the golden contract. The table
+KS p-value ignores estimation. The parametric bootstrap refits on every
+simulated path, so its p-value is the one to quote. `n_boot=19` keeps the
+recipe quick; `research/run_all.py` uses 49, and a real check wants more.
+
+**Python**
+
+```python
+from lobmod import fit_uni, read_times_csv, uni_residuals
+from lobmod.research import bootstrap_ks_uni, inference_uni, ljung_box
+
+t = read_times_csv("../data/hawkes_uni.csv")
+T = 1000.0
+fit = fit_uni(t, T)
+inf = inference_uni(t, T, fit)
+for name, est, se in zip(inf.names, inf.estimate, inf.se):
+    print(f"{name} {est:.3f} se {se:.3f}")   # mu 0.505 se 0.037, alpha 0.979 se 0.089, beta 1.679 se 0.161
+print(f"{inf.branching:.3f} se {inf.branching_se:.3f}")   # 0.583 se 0.033
+
+gof = bootstrap_ks_uni(t, T, n_boot=19, seed=1, fit=fit)
+print(f"{gof.statistic:.4f} {gof.p_naive:.3f} {gof.p_value:.3f}")   # 0.0172 0.863 0.450
+
+lb = ljung_box(uni_residuals(t, T, fit.mu, fit.alpha, fit.beta), lags=10)
+print(f"{lb.statistic:.2f} {lb.p_value:.3f}")   # 6.78 0.746
+```
+
+## 16. How do I run purged walk-forward folds and an executable backtest?
+
+`walk_forward_splits` removes training rows whose label window reaches the test
+block, then an embargo. `run_backtest` pays the spread both ways, with a delay
+in events and a fee per side, so it is harsher than `signal_pnl`.
+
+**Python**
+
+```python
+from lobmod import MLP, Standardizer, compute_features, load_feature_config, read_events_csv, replay
+from lobmod.research import BacktestConfig, run_backtest, walk_forward_splits
+
+cfg = load_feature_config("../data/features_config.json")
+states = replay(read_events_csv("../data/lob_events.csv"), cfg.depth_k)
+fs = compute_features(states, cfg)
+
+for fold in walk_forward_splits(fs.event_index, n_folds=3, horizon=cfg.horizon, embargo=50):
+    scaler = Standardizer().fit(fs.X[fold.train])
+    model = MLP(5, (), 3)                              # no hidden layer: logistic
+    model.fit(scaler.transform(fs.X[fold.train]), fs.y[fold.train], cfg.learning_rate, 200)
+    pred = model.predict(scaler.transform(fs.X[fold.test]))
+    s = run_backtest(states, fs.event_index[fold.test], pred - 1,
+                     BacktestConfig(hold=cfg.horizon, delay=1, fee_per_side=0.1)).stats
+    print(fold.train.size, fold.test.size, int(s["n_trades"]), round(s["net"], 1))
+# 2983 435 8 -9.6
+# 3418 435 6 -10.2
+# 3853 435 17 -26.4
+```
+
+Three folds of one synthetic stream show the mechanics and nothing more. The
+multi-seed figures are in `research/results.md`.
+
+## 17. How do I fit multi-exponential, power-law and seasonal Hawkes models?
+
+`simulate_cluster` draws a path with any kernel shape, because you hand it the
+parent-to-child lags. Here the truth has two timescales and branching 0.6.
+
+**Python**
+
+```python
+import numpy as np
+
+from lobmod.research.kernels import fit_power_law, fit_sum_exp, simulate_cluster
+from lobmod.research.seasonality import select_baseline
+
+rng = np.random.default_rng(7)
+T = 1000.0
+
+def two_timescales(k):
+    fast = rng.random(k) < 0.5
+    return np.where(fast, rng.exponential(1 / 20.0, k), rng.exponential(1 / 0.5, k))
+
+t = simulate_cluster(lambda x: np.full_like(x, 1.0), 1.0, 0.6, two_timescales, T, rng)
+for fit in (fit_sum_exp(t, T, K=1), fit_sum_exp(t, T, K=2), fit_power_law(t, T)):
+    print(f"{fit.name}: n {fit.branching:.3f}, BIC {fit.bic:.1f}")
+# exp K=1: n 0.383, BIC -1120.1      (branching badly understated)
+# exp K=2: n 0.629, BIC -1206.7      (lowest BIC, near the true 0.6)
+# power-law mix: n 0.641, BIC -1184.2
+
+def u_shape(x):
+    return 1.0 + 12.0 * (x / T - 0.5) ** 2      # busy open and close, between 1 and 4
+
+u = simulate_cluster(u_shape, 4.0, 0.5, lambda k: rng.exponential(1 / 3.0, k), T, rng)
+print(round(fit_sum_exp(u, T, K=1).branching, 3))   # 0.696: seasonality read as excitation
+best, baseline, table = select_baseline(u, T)
+print(baseline.J, round(best.branching, 3))         # 2 0.563 (true n is 0.5)
+```
+
+One path per case: use `research/results_models.md` for the 60-path figures.
+
+## 18. How do I label rows by what a round trip would actually pay?
+
+The pinned labels say which way the mid moved. `cost_aware_labels` says whether
+crossing the spread both ways, after fees and a delay, would have paid.
+
+**Python**
+
+```python
+import numpy as np
+
+from lobmod import compute_features, load_feature_config, read_events_csv, replay
+from lobmod.research.labels import cost_aware_labels
+
+cfg = load_feature_config("../data/features_config.json")
+states = replay(read_events_csv("../data/lob_events.csv"), cfg.depth_k)
+fs = compute_features(states, cfg)
+
+print(round(float(np.mean(fs.y != 1)), 3))      # 0.326: pinned labels, not flat
+for H in (10, 200):
+    lab = cost_aware_labels(states, fs.event_index, horizon=H, fee_per_side=0.1, delay=1)
+    print(H, round(float(np.mean(lab.y[lab.valid] != 1)), 3))   # 10 0.021, then 200 0.401
+```
+
+## 19. How do I run the execution simulator and read the attribution?
+
+Every flow parameter is assumed, and the agents get a free fair-value feed
+unless `sees_signal=False`. Read the attribution, not the P&L level, and use
+many seeds as `research/run_sim.py` does. One short run is shown here.
+
+**Python**
+
+```python
+from lobmod.sim import AgentSpec, AvellanedaStoikov, FlowParams, NaiveTouch, Simulator
+from lobmod.sim import attribute, realised_spread
+
+agents = [
+    AgentSpec("naive", NaiveTouch(cap=5), md_latency=0.01, oe_latency=0.01),
+    AgentSpec("as", AvellanedaStoikov(cap=5), md_latency=0.01, oe_latency=0.01),
+]
+res = Simulator(FlowParams(), agents, T=120.0, seed=1).run()
+print(res.n_events)                                  # 8962
+a = attribute(res, "naive", horizon=1.0)
+print(a.spread, a.adverse, a.inventory, a.total, a.lots)   # 104.0 -28.0 -2.0 74.0 126
+b = attribute(res, "as", horizon=1.0)
+print(b.spread, b.adverse, b.inventory, b.total, b.lots)   # 48.5 15.0 -39.5 24.0 30
+print(round(realised_spread(res, "naive", [1.0])[1.0], 3)) # 0.603 ticks per lot
+```
+
+With zero fees the three terms add up to `total`, which equals the booked P&L.
+Positive P&L here is not an edge: see `research/results_sim.md`.
+
+## 20. How do I use FastBook?
+
+C++ and Rust only, integer ticks only. You fix the price band and the pool up
+front, fills go to a callback, and refusals are return values. Build C++ with
+`#include "fast_book.hpp"` added to the prelude and `-I fast` added to the
+command.
+
+**C++**
+
+```cpp
+using namespace lobmod::fast;
+Config cfg;
+cfg.min_price_ticks = 900;
+cfg.n_levels = 200;          // band 900..1099
+cfg.max_orders = 1024;
+FastBook book(cfg);
+auto sink = [](std::int64_t maker, std::int64_t px, std::int64_t qty) {
+    std::cout << maker << " " << px << " " << qty << "\n";
+};
+book.limit(Side::Buy, 1000, 5, 1, sink);
+book.limit(Side::Sell, 1002, 3, 2, sink);
+OpResult r = book.limit(Side::Buy, 1002, 4, 3, sink);    // prints 2 1002 3
+std::cout << r.value << " " << book.best_bid() << "\n";  // 1 1002
+std::cout << (book.limit(Side::Buy, 5000, 1, 4, sink).status == Status::OutOfBand)
+          << "\n";                                       // 1
+std::cout << book.cancel(1).value << "\n";               // 5
+```
+
+**Rust**
+
+```rust
+use lobmod::fast_book::{FastBook, FastConfig, FastError};
+use lobmod::Side;
+
+let cfg = FastConfig { min_price_ticks: 900, n_levels: 200, max_orders: 1024 };
+let mut book = FastBook::new(cfg).expect("bad band or pool size");
+let mut sink = |maker: i64, px: i64, qty: i64| println!("{maker} {px} {qty}");
+book.limit(Side::Bid, 1000, 5, 1, &mut sink).unwrap();
+book.limit(Side::Ask, 1002, 3, 2, &mut sink).unwrap();
+let rested = book.limit(Side::Bid, 1002, 4, 3, &mut sink).unwrap(); // prints 2 1002 3
+println!("{} {:?}", rested, book.best_bid());            // 1 Some(1002)
+let refused = book.limit(Side::Bid, 5000, 1, 4, &mut sink);
+println!("{}", refused == Err(FastError::OutOfBand));    // true
+println!("{}", book.cancel(1).unwrap());                 // 5
+```
+
+There is no FastBook in Python or Java. Timings are in `docs/LATENCY.md`.
+
+---
+
 ## Verifying the snippets
 
-Every fenced block above was extracted, wrapped exactly as described in the
-conventions, compiled against the built library and executed from the
-language directory (Python 3.11, g++ 13 `-std=c++17`, cargo 1.95 release
-profile, OpenJDK 21), and produced the values shown in the comments. Re-run
-the same check after any API change: any snippet that stops compiling is a
+Every fenced block was extracted, wrapped as the conventions describe and run on
+2026-11-05 from a clean export of the code, with these tools: Python 3.12 and
+numpy 2.4 on Windows, cargo release profile on Windows, JDK 27 on Windows, and
+g++ 15.2 under WSL (library compiled directly from `cpp/src`, not through
+`build.sh`). All 60 blocks compiled and ran without error, and the printed
+values of recipes 13-20 match their comments. Comments in recipes 1-12 were
+checked when they were written and were not compared line by line in this pass.
+Recipe 17 uses numpy's generator, so its values can move with the numpy version.
+Re-run the same check after any API change: a snippet that stops compiling is a
 documentation bug.

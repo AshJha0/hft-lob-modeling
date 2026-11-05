@@ -38,13 +38,15 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
 <header>
   <div class="wrap">
     <h1>hft-lob-modeling</h1>
-    <p><strong>A synthetic research and teaching lab: no real market data, no latency measurement, not a trading system.</strong> Every number on this page describes simulated data. Limits and further results are in the README and in research/results.md.</p>
+    <p><strong>A synthetic research and teaching lab: bundled data and results are simulated, the simulator is uncalibrated, timings cover the book only with no wire-to-wire figure, and this is not a trading system.</strong> Limits and further results are in the README and the research results linked below. Latest release: v1.2.0; round 2 is merged and unreleased.</p>
     <p>A four-language (Python / C++ / Rust / Java) cross-verified laboratory for high-frequency market microstructure: a price-time-priority limit order book with deterministic replay, a pinned zero-intelligence order-flow generator, univariate and bivariate Hawkes processes with exact O(N) likelihoods, Ogata thinning and time-rescaling goodness of fit, and an OFI / queue-imbalance feature pipeline feeding a neural network built from scratch with no frameworks and no RNG. Every numerical path is pinned by API_SPEC.md and held to 18 golden cases in all four languages — closed out by an honest accounting of whether the predicted signal survives transaction costs (it does not: gross +45.0 ticks, net −139.5).</p>
     <nav>
       <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LEARN.md">Learn (guide)</a>
       <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/COOKBOOK.md">Cookbook</a>
       <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/docs/ARCHITECTURE.md">Architecture</a>
       <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/API_SPEC.md">API contract</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/blob/main/docs/LATENCY.md">Book timings</a>
+      <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling/tree/main/research">Research results</a>
       <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling#references">References</a>
       <a class="secondary" href="https://github.com/AshJha0/hft-lob-modeling">GitHub</a>
       <a class="secondary" href="https://ashjha0.github.io/quant-portfolio/">Quant portfolio</a>
@@ -71,7 +73,7 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
   <h2>What's inside</h2>
   <div class="grid">
     <div class="card"><h3>Limit order book</h3>
-      <p>Price-time-priority matching with partial fills, market orders walking the book, crossed limits that stop at their own price, unknown-cancel and duplicate-id rejection. Prices are integer ticks (<code>tick_size</code> converts once at the API boundary); mid and microprice are the only doubles, with an explicit NaN guard when a side is empty (61 such events in the bundled stream).</p></div>
+      <p>Price-time-priority matching with partial fills, market orders walking the book, <code>reduce</code>, <code>execute</code> and <code>replace</code>, crossed limits that stop at their own price, unknown-cancel and duplicate-id rejection. Prices are integer ticks (<code>tick_size</code> converts once at the API boundary); mid and microprice are the only doubles, with an explicit NaN guard when a side is empty (61 such events in the bundled stream).</p></div>
     <div class="card"><h3>Replay, ZI flow and CSV</h3>
       <p>Deterministic event replay with golden book snapshots; a zero-intelligence generator inspired by Smith, Farmer, Gillemot &amp; Krishnamurthy but not the same model (geometric placement off the opposite best, no event clock), with a pinned <code>u1, u2[, u3]</code> draw order; and strict readers/writers for the three CSV schemas (exact header, CRLF tolerated, only trailing blank lines, 64-bit integer grammar) so a hand-edited file fails loudly in every language.</p></div>
     <div class="card"><h3>Hawkes processes</h3>
@@ -86,10 +88,20 @@ footer{margin:3rem 0 2rem;color:var(--muted);font-size:.85rem;text-align:center}
       <p>Trades the predicted direction on the chronological holdout mid-to-mid, charging half a spread on entry only — PnL in ticks per unit size. On this split the MLP edges its baselines and costs erase the gross PnL. Across 100 seeds logistic beats the MLP by 0.59 points (SE 0.16); what the models pick up is generator mechanics, and spread alone gives 0.693 of the 0.704.</p></div>
     <div class="card"><h3>Testing approach</h3>
       <p>Three layers per language: the 18 goldens, the invariant and statistical tests API_SPEC §10 requires (KS at true parameters fails to reject, near-critical DGP fits with a warning, tiny-n KS), and the post-review edge-case suite (tick-0 and 6·10¹² / 10³⁰⁰-tick prices, CSV robustness, <code>maxiter = 1</code> reporting <code>converged = false</code>, Poisson and single-event limits, degenerate one-class labels). Tolerances are graduated: 1e-12 where arithmetic is exact, 1e-8 for pinned float pipelines, 1e-4 / 1e-3 for optimizer outputs.</p></div>
+    <div class="card"><h3>v2 events</h3>
+      <p>Schema v2 adds nanosecond timestamps and the types <code>R</code> (reduce, keeps queue place), <code>U</code> (replace, loses priority) and <code>E</code> (execute a named order) in all four ports. v1 files and goldens are unchanged, and the v2 reader also accepts a v1 file.</p></div>
+    <div class="card"><h3>Feeds</h3>
+      <p><code>lobmod.feeds</code> parses Nasdaq TotalView-ITCH 5.0 framing into v2 events and checks the resulting book. Python only. Tested on hand-built fixtures.</p></div>
+    <div class="card"><h3>Richer Hawkes models</h3>
+      <p>Multi-exponential and power-law kernels and seasonal baselines in <code>lobmod.research</code>. On simulated two-timescale paths with true branching 0.6, one exponential reports 0.31, and a U-shaped baseline fitted as flat turns a true 0.5 into 0.86. <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/research/results_models.md">Results</a>.</p></div>
+    <div class="card"><h3>Execution simulator</h3>
+      <p><code>lobmod.sim</code> runs Hawkes market flow, state-dependent limit and cancel flow, informed takers and agents behind market-data and order-entry delays, on a real book with queue position, fees and P&amp;L attribution. Every parameter is assumed. Agents get a free fair-value feed; without it the latency effect is not distinguishable from zero. P&amp;L levels are not an edge. <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/research/results_sim.md">Results</a>.</p></div>
+    <div class="card"><h3>FastBook</h3>
+      <p>A preallocated book in C++ and Rust with O(1) cancel inside a fixed price band, tested against the reference book. Book-only timings on a noisy laptop: about 5x throughput in C++ and 2.4x to 3.4x in Rust on one synthetic script, with smaller single-operation gains. Not wire-to-wire. <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/docs/LATENCY.md">LATENCY.md</a>.</p></div>
     <div class="card"><h3>Reference papers</h3>
       <p>Smith, Farmer, Gillemot &amp; Krishnamurthy (2003) as inspiration for the ZI generator; Stoikov (2018) for contrast, since his micro-price is a limit of expected future mids and <code>microprice</code> here is the size-weighted mid; Cont, Kukanov &amp; Stoikov (2014) OFI; Hawkes (1971), Ozaki (1979), Ogata (1978, 1981), Bacry, Mastromatteo &amp; Muzy (2015); Brown et al. (2002), Meyer (1971), Stephens (1970), Numerical Recipes §14.3.3; Nelder &amp; Mead (1965), Lagarias et al. (1998), SciPy 1.0; Bishop (2006), He et al. (2015); Knuth TAOCP Vol. 2 §3.3.4 for the LCG.</p></div>
-    <div class="card"><h3>Units and what is out of scope</h3>
-      <p>Hawkes times and <code>T</code> share one arbitrary unit (seconds in the bundled data) with <code>mu</code>, <code>beta</code> per unit time and <code>alpha</code> per event. Not covered: timestamps and clock-time windows, calendars and sessions, reduce/replace/iceberg/auction/halt messages, fees, latency, fill probability, queue-position tracking, standard errors or Hessians for the MLE, duplicate-timestamp tie-breaking, multi-venue books. A reference and research implementation, not a matching engine or trading system.</p></div>
+    <div class="card"><h3>Units and what is still absent</h3>
+      <p>Hawkes times and <code>T</code> share one arbitrary unit (seconds in the bundled data) with <code>mu</code>, <code>beta</code> per unit time and <code>alpha</code> per event. Timestamps and reduce/replace/execute are in the book and v2 schema; fees, latency and queue tracking are in the simulator; standard errors are in <code>lobmod.research</code>. Still absent: auctions, halts as book states, iceberg and hidden orders in the book, multi-venue books, calendars and sessions, duplicate-timestamp tie-breaking, and calibration to real data. A reference and research implementation, not a matching engine or trading system.</p></div>
   </div>
 
   <h2>Part of a wider portfolio</h2>
@@ -126,20 +138,24 @@ cd ..
 cd cpp
 bash build.sh    # cmake configure + build (Release, -j2)
 ./build/demo
-ctest --test-dir build --output-on-failure    # 90 GoogleTest cases
+ctest --test-dir build --output-on-failure
 cd ..
 
 # Rust (edition 2021, cargo 1.95)
 cd rust
 cargo run --release --bin demo
-cargo test --release             # 94 unit + integration + golden tests
+cargo test --release
 cd ..
 
 # Java (21; JUnit 4 + Hamcrest at /usr/share/java)
 cd java
 bash build.sh    # javac -Xlint:all -Werror into out/
 bash demo.sh
-bash test.sh</pre>
+bash test.sh
+cd ..
+
+# Research tables and book timings: see the README
+PYTHONPATH=python/src python3 research/run_all.py</pre>
 
   <footer>hft-lob-modeling is MIT-licensed — a reference and research implementation, not a trading system; see the <a href="https://github.com/AshJha0/hft-lob-modeling#readme">README</a> and <a href="https://github.com/AshJha0/hft-lob-modeling/blob/main/LICENSE">LICENSE</a> on GitHub.</footer>
 </div>

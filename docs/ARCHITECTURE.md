@@ -10,8 +10,8 @@ look the way they do.
 | Component | Responsibility | Depends on |
 |---|---|---|
 | `rng` (`Lcg64`) | The **only** source of randomness project-wide: pinned Knuth/MMIX 64-bit LCG; uniform / exponential / geometric / randint with pinned formulas and draw order | — |
-| `book` (`LimitOrderBook`) | Price-time priority matching on an integer tick grid: limit adds (incl. marketable/crossed), cancels by id, market orders with partial fills; mid / spread / microprice / depth, NaN-guarded | — |
-| `replay` | Event schema (`L`/`C`/`M`), event CSV i/o under the pinned strict parsing rules, deterministic replay (`tick_size = 1`, prices are tick counts) producing per-event `BookStates` arrays | `book`, `csv` |
+| `book` (`LimitOrderBook`) | Price-time priority matching on an integer tick grid: limit adds (incl. marketable/crossed), cancels by id, market orders with partial fills, `reduce` (keeps queue place), `execute` (fills a named order at its price), `replace` (new id at the tail, priority lost; a crossing replace executes); mid / spread / microprice / depth, NaN-guarded | — |
+| `replay` | Event schemas (v1 `L`/`C`/`M`; v2 adds `ts_ns` and `R`/`U`/`E`, and its reader lifts v1 files), event CSV i/o under the pinned strict parsing rules, deterministic replay (`tick_size = 1`, prices are tick counts) producing per-event `BookStates` arrays | `book`, `csv` |
 | `csv` (C++/Rust/Java module; Python helpers in `replay`) | Shared pinned CSV primitives: header check, CRLF strip, trailing-blank-line rule, strict `-?[0-9]+` / finite-float field grammar | — |
 | `zi` | Zero-intelligence flow generator (inspired by Smith et al. 2003, not the same model): pinned rates, geometric placement, seeded; maintains an internal book so quotes evolve exactly as a replay would | `book`, `replay`, `rng` |
 | `hawkes` | Uni/bivariate exponential-kernel Hawkes: O(N) log-likelihood recursions plus O(N²) brute-force references, Ogata-thinning simulation (bounded by `MAX_CANDIDATES`), MLE on log-parameters with exposed pure objectives and a `maxiter` cap, time-rescaling residuals, branching diagnostics, `t` / `t,type` CSV i/o | `neldermead`, `rng`, `csv` |
@@ -29,6 +29,7 @@ Dependency edges only point "down" (no cycles); `book`, `neldermead`, `gof`,
 flowchart TD
     subgraph DATA["data/ (bundled, deterministic)"]
         LC["lob_events.csv<br/>5000 events, seed 20240613"]
+        LV["lob_events_v2.csv<br/>17-event v2 fixture"]
         HU["hawkes_uni.csv<br/>1211 event times, seed 101"]
         HB["hawkes_biv.csv<br/>611 times+types, seed 33"]
         FC[features_config.json]
@@ -81,6 +82,46 @@ flowchart TD
     KS --> GOLD
     BS --> GOLD
     GJ --> GOLD
+
+    subgraph FEEDS["lobmod.feeds (Python, hand-built fixtures)"]
+        IT["Itch50Parser<br/>framed ITCH 5.0"] --> EV["EventV2 stream<br/>ts_ns, L C M R U E"]
+        EV --> IC["BookIntegrityChecker"]
+    end
+    LV --> RV["read_events_v2_csv / replay_v2<br/>all four ports"]
+    EV --> RV
+    RV --> BK
+
+    subgraph RESEARCH["lobmod.research (Python, no goldens)"]
+        INF["inference, bootstrap GoF"]
+        KER["multi-exponential, power-law,<br/>seasonal Hawkes"]
+        EVL["walk-forward, cost-aware labels,<br/>boosted trees"]
+        BT["taker backtest, passive maker"]
+    end
+    FIT --> INF
+    HU --> KER
+    FE --> EVL
+    EVL --> BT
+    BS --> BT
+    BT --> RMD["research/results*.md"]
+    INF --> RMD
+    KER --> RMD
+
+    subgraph SIMS["lobmod.sim (Python, uncalibrated)"]
+        ENG["Simulator<br/>Hawkes flow, informed takers,<br/>agents behind latency"]
+        ACC["attribution, realised spread,<br/>fill by queue"]
+        ENG --> ACC
+    end
+    BK --- ENG
+    RNG --> ENG
+    ACC --> RMD
+
+    subgraph FAST["FastBook (C++, Rust)"]
+        FB["FastBook<br/>band, pool, sink"]
+        BEN["benchmarks"]
+        FB --> BEN
+    end
+    BK -. "differential tests" .- FB
+    BEN --> LAT["docs/LATENCY.md"]
 ```
 
 Two independent pipelines share nothing but the RNG and the golden harness:
@@ -108,6 +149,9 @@ classDiagram
         +limit(side, price, size, id) fills, rested
         +limit_ticks(side, ticks, size, id) fills, rested
         +cancel(id) removed_size
+        +reduce(id, by_size) remaining
+        +execute(id, size) fill
+        +replace_ticks(id, new_id, ticks, size) fills, rested
         +market(side, size) fills, unfilled
         +mid() f64
         +microprice() f64
@@ -120,6 +164,14 @@ classDiagram
         +etype: L C M
         +side: B S
         +price ticks i64, size i64, order_id i64
+    }
+    class EventV2 {
+        +seq: i64
+        +ts_ns: i64
+        +etype: L C M R U E
+        +side: B S
+        +price ticks i64, size i64
+        +order_id i64, new_order_id i64
     }
     class BookStates {
         +best_bid best_ask
@@ -161,6 +213,37 @@ classDiagram
         +transform(X)
     }
 
+    class FastBook {
+        C++ and Rust only
+        -ladder, bitset, node pool, id map
+        +limit(side, ticks, size, id, sink) status
+        +cancel(id) status
+        +market(side, size, sink) status
+    }
+    class Itch50Parser {
+        Python only, hand-built fixtures
+        +parse(stream) FeedEvent, TradeReport, StatusMessage
+    }
+    class BookIntegrityChecker {
+        +apply(event)
+        +verify() bid_orders, ask_orders
+    }
+    class Research["lobmod.research"] {
+        Python only, no goldens
+        +inference_uni() bootstrap_ks_uni()
+        +walk_forward_splits() run_backtest()
+        +fit_sum_exp() fit_power_law() fit_seasonal()
+        +cost_aware_labels()
+    }
+    class Simulator {
+        Python only, uncalibrated
+        +run() SimResult
+    }
+    class Accounting["sim.accounting"] {
+        +attribute() realised_spread()
+        +fill_prob_by_queue()
+    }
+
     class zi_generate_events["zi.generate_events"]
     class hawkes_simulate["hawkes.simulate"]
     class replay_replay["replay.replay"]
@@ -185,6 +268,16 @@ classDiagram
     hawkes_fit_uni ..> HawkesUniFit : returns
     hawkes_fit_biv ..> HawkesBivFit : returns
     HawkesUniFit <.. gof_ks_test_exp : residuals tested
+    replay_replay ..> EventV2 : replay_v2 applies
+    Itch50Parser ..> EventV2 : emits
+    BookIntegrityChecker ..> EventV2 : reads
+    BookIntegrityChecker ..> LimitOrderBook : drives
+    FastBook ..> LimitOrderBook : same matching, tested against
+    Research ..> BookStates : reads
+    Research ..> FeatureSet : reads
+    Research ..> hawkes_fit_uni : uses
+    Simulator ..> LimitOrderBook : drives
+    Simulator ..> Accounting : SimResult
 ```
 
 ## 4. Matching-engine walkthrough
@@ -391,10 +484,27 @@ Current test counts: see CI.
 
 ## Layers added after v1.2.0
 
-The pinned core stays the reference. Three layers sit on it.
+The pinned core stays the reference, and v1 files and goldens did not change.
+`reduce`, `execute`, `replace` and schema v2 are in all four ports and specified
+in `API_SPEC.md`. Everything else below is outside the golden contract.
 
-- `lobmod.feeds` turns a venue feed into v2 events, and `BookIntegrityChecker` flags impossible book states.
-- `lobmod.research` holds analysis tools outside the golden contract.
-- `lobmod.sim` drives a real `LimitOrderBook` with reactive flow and clock-time latency, and attributes P&L.
+| Layer | Languages | Input | Output |
+|---|---|---|---|
+| `lobmod.feeds` | Python | framed ITCH 5.0 bytes | `EventV2` per symbol, trade and status records; `BookIntegrityChecker` flags impossible book states |
+| `lobmod.research` | Python | `BookStates`, `FeatureSet`, event times | standard errors, tests, folds, backtests, kernel and seasonal fits; tables in `research/results*.md` |
+| `lobmod.sim` | Python | assumed `FlowParams`, `AgentSpec` list, seed | `SimResult`, then attribution; tables in `research/results_sim.md` |
+| `FastBook` | C++, Rust | integer-tick orders and a fill callback | status codes; timings in `LATENCY.md` |
 
-`FastBook` is a separate implementation for speed. It is not pinned by goldens; randomized differential tests hold it to the reference book, and prices outside its configured band return an error code.
+Data flows one way. A feed produces v2 events, and those replay through the same
+`LimitOrderBook` as the bundled files. Because the book matches any add at or
+through the opposite best while a feed reports executions separately,
+`BookIntegrityChecker` holds crossing adds out of the book instead of inventing
+trades. Research reads book states and never writes back into the core. The
+simulator drives a real `LimitOrderBook` from a clock-time event heap and books
+cash separately from the attribution, so their agreement is a real check.
+
+`FastBook` is a separate implementation for speed. It is not pinned by goldens;
+randomized differential tests hold it to the reference book, and prices outside
+its configured band return an error code. It has `limit`, `cancel` and `market`
+only, so it cannot replay v2 `R`, `U` or `E` events. `research/` scripts and
+`fuzz/` harnesses are tools around the code and nothing depends on them.

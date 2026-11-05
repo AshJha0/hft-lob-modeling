@@ -1,6 +1,7 @@
 flowchart TD
     subgraph DATA["data/ (bundled, deterministic)"]
         LC["lob_events.csv<br/>5000 events, seed 20240613"]
+        LV["lob_events_v2.csv<br/>17-event v2 fixture"]
         HU["hawkes_uni.csv<br/>1211 event times, seed 101"]
         HB["hawkes_biv.csv<br/>611 times+types, seed 33"]
         FC[features_config.json]
@@ -53,3 +54,43 @@ flowchart TD
     KS --> GOLD
     BS --> GOLD
     GJ --> GOLD
+
+    subgraph FEEDS["lobmod.feeds (Python, hand-built fixtures)"]
+        IT["Itch50Parser<br/>framed ITCH 5.0"] --> EV["EventV2 stream<br/>ts_ns, L C M R U E"]
+        EV --> IC["BookIntegrityChecker"]
+    end
+    LV --> RV["read_events_v2_csv / replay_v2<br/>all four ports"]
+    EV --> RV
+    RV --> BK
+
+    subgraph RESEARCH["lobmod.research (Python, no goldens)"]
+        INF["inference, bootstrap GoF"]
+        KER["multi-exponential, power-law,<br/>seasonal Hawkes"]
+        EVL["walk-forward, cost-aware labels,<br/>boosted trees"]
+        BT["taker backtest, passive maker"]
+    end
+    FIT --> INF
+    HU --> KER
+    FE --> EVL
+    EVL --> BT
+    BS --> BT
+    BT --> RMD["research/results*.md"]
+    INF --> RMD
+    KER --> RMD
+
+    subgraph SIMS["lobmod.sim (Python, uncalibrated)"]
+        ENG["Simulator<br/>Hawkes flow, informed takers,<br/>agents behind latency"]
+        ACC["attribution, realised spread,<br/>fill by queue"]
+        ENG --> ACC
+    end
+    BK --- ENG
+    RNG --> ENG
+    ACC --> RMD
+
+    subgraph FAST["FastBook (C++, Rust)"]
+        FB["FastBook<br/>band, pool, sink"]
+        BEN["benchmarks"]
+        FB --> BEN
+    end
+    BK -. "differential tests" .- FB
+    BEN --> LAT["docs/LATENCY.md"]

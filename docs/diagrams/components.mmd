@@ -15,6 +15,9 @@ classDiagram
         +limit(side, price, size, id) fills, rested
         +limit_ticks(side, ticks, size, id) fills, rested
         +cancel(id) removed_size
+        +reduce(id, by_size) remaining
+        +execute(id, size) fill
+        +replace_ticks(id, new_id, ticks, size) fills, rested
         +market(side, size) fills, unfilled
         +mid() f64
         +microprice() f64
@@ -27,6 +30,14 @@ classDiagram
         +etype: L C M
         +side: B S
         +price ticks i64, size i64, order_id i64
+    }
+    class EventV2 {
+        +seq: i64
+        +ts_ns: i64
+        +etype: L C M R U E
+        +side: B S
+        +price ticks i64, size i64
+        +order_id i64, new_order_id i64
     }
     class BookStates {
         +best_bid best_ask
@@ -68,6 +79,37 @@ classDiagram
         +transform(X)
     }
 
+    class FastBook {
+        C++ and Rust only
+        -ladder, bitset, node pool, id map
+        +limit(side, ticks, size, id, sink) status
+        +cancel(id) status
+        +market(side, size, sink) status
+    }
+    class Itch50Parser {
+        Python only, hand-built fixtures
+        +parse(stream) FeedEvent, TradeReport, StatusMessage
+    }
+    class BookIntegrityChecker {
+        +apply(event)
+        +verify() bid_orders, ask_orders
+    }
+    class Research["lobmod.research"] {
+        Python only, no goldens
+        +inference_uni() bootstrap_ks_uni()
+        +walk_forward_splits() run_backtest()
+        +fit_sum_exp() fit_power_law() fit_seasonal()
+        +cost_aware_labels()
+    }
+    class Simulator {
+        Python only, uncalibrated
+        +run() SimResult
+    }
+    class Accounting["sim.accounting"] {
+        +attribute() realised_spread()
+        +fill_prob_by_queue()
+    }
+
     class zi_generate_events["zi.generate_events"]
     class hawkes_simulate["hawkes.simulate"]
     class replay_replay["replay.replay"]
@@ -92,3 +134,13 @@ classDiagram
     hawkes_fit_uni ..> HawkesUniFit : returns
     hawkes_fit_biv ..> HawkesBivFit : returns
     HawkesUniFit <.. gof_ks_test_exp : residuals tested
+    replay_replay ..> EventV2 : replay_v2 applies
+    Itch50Parser ..> EventV2 : emits
+    BookIntegrityChecker ..> EventV2 : reads
+    BookIntegrityChecker ..> LimitOrderBook : drives
+    FastBook ..> LimitOrderBook : same matching, tested against
+    Research ..> BookStates : reads
+    Research ..> FeatureSet : reads
+    Research ..> hawkes_fit_uni : uses
+    Simulator ..> LimitOrderBook : drives
+    Simulator ..> Accounting : SimResult
