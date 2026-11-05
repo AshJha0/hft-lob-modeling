@@ -3,7 +3,8 @@
 This document teaches the theory behind `lobmod`, from the mechanics of a limit
 order book to Hawkes processes and a from-scratch neural network, ending with
 the two doses of realism every microstructure student needs: transaction costs
-and what real HFT infrastructure actually looks like. Notation follows
+and what real HFT infrastructure actually looks like. Section 10 then covers the
+layers added around the pinned core. Notation follows
 `API_SPEC.md`; all worked numbers reproduce entries of `data/golden/golden.json`.
 
 ---
@@ -114,10 +115,10 @@ exactly — book replay is pure integer bookkeeping, so tolerance 1e-12 is reall
   venue), but equity data comes with consolidated tapes and clean event feeds
   (ITCH-style add/cancel/execute messages — the `L/C/M` schema of
   `data/lob_events.csv` covers ITCH's add (`A`), full delete (`D`) and the
-  aggressor side of executions; it does **not** model partial cancels /
-  reduces (`X`), replace with priority loss (`U`), executions against a
-  specific resting order (`E`/`C`), hidden or iceberg orders, or auctions),
-  while FX depth data is fragmented and often quote-based.
+  aggressor side of executions; schema v2 adds partial cancels (`X`), replace
+  with priority loss (`U`) and executions against a named resting order
+  (`E`/`C`), see section 10.1; hidden or iceberg orders and auctions are still
+  not modeled), while FX depth data is fragmented and often quote-based.
 
 ---
 
@@ -641,15 +642,16 @@ axis:
 - **Colocation and determinism of the race.** Servers sit in the exchange's
   data center with equalized cable lengths; microwave/shortwave links carry
   cross-venue signals faster than fiber. Speed decides who wins each race to
-  hit a stale quote or join a queue first — a dimension entirely absent here,
-  where events are processed one at a time with no notion of *your* latency.
+  hit a stale quote or join a queue first — a dimension absent from the pinned
+  core, where events are processed one at a time. `lobmod.sim` adds an assumed
+  fixed delay for *your* agent (section 10.4), with no jitter and no real venue.
 - **Queue position as the asset.** With one-tick spreads, expected earnings of
   a passive order depend sharply on where it stands in the FIFO queue (early
   orders fill on benign flow; late orders fill mostly when the level is about
   to break — adverse selection *within* the level). Real systems track their
-  own queue position estimate per order and value it explicitly. Our simulator
-  has faithful FIFO queues but no concept of "our" order competing with
-  others' reactions.
+  own queue position estimate per order and value it explicitly. The pinned
+  book has faithful FIFO queues and no "our" order. `lobmod.sim` places agents'
+  orders in that book and logs the lots ahead at entry, against synthetic flow.
 - **Feeds and state reconstruction.** Real systems build the book from
   ITCH-style market-data feeds (OUCH is the order-entry protocol, not a feed), handle A/B feed arbitration, gaps,
   retransmits, and venue-specific auction/halt states; messages can arrive out
@@ -695,16 +697,19 @@ A concrete, honest workflow for a market-microstructure research desk:
    *chronological* split. Use `signal_pnl` as a screening diagnostic only:
    it is mid-to-mid, overlapping and charges half a spread on entry. If a
    signal does not survive *that*, it will not survive fees, adverse
-   selection and latency; if it does, the next step is a proper event-driven
-   backtest with queue position and fill probability — outside this project.
+   selection and latency; if it does, the next step is an event-driven
+   test with queue position and fill probability. `lobmod.sim` shows the shape
+   of one, but it is uncalibrated, so a desk would need its own on real data.
 4. **Reproduce across languages.** The same goldens are asserted by the
    Python, C++, Rust and Java ports, so a research result computed in Python
    can be re-run in the production language and compared to 1e-8, which is
    the practical reason the whole pipeline is pinned.
 
-What the library deliberately leaves to the desk: timestamps (all windows
-are in *events*), calendars and sessions, order-lifecycle messages beyond
-add/cancel/market, fees, latency, and any notion of "our" order in the queue.
+What the library leaves to the desk: clock-time feature windows (the pinned
+pipeline counts *events*), calendars and sessions, auctions and halts as book
+states, and calibration of anything to real data. Timestamps, reduce, replace,
+execute, fees, latency and "our" order in the queue now exist in the layers
+described in section 10.
 
 ---
 
@@ -752,7 +757,169 @@ add/cancel/market, fees, latency, and any notion of "our" order in the queue.
 
 ---
 
-## 10. Knowledge check
+## 10. Beyond the pinned core
+
+Sections 1 to 9 describe the pinned, four-language core. This section covers the
+layers around it. All evidence here is synthetic. Numbers come from
+`research/results_models.md`, `research/results_sim.md` and `docs/LATENCY.md`.
+
+### 10.1 L3 events
+
+**The idea.** A level-3 feed reports each order's life, not only the top of the
+book. Taking size off an order is different from replacing it: one keeps its
+place in the queue and the other goes to the back.
+
+**Formally.** Schema v2 adds `ts_ns` and three types to `L`, `C`, `M`. For a
+resting order with size $q$:
+
+- `R` (reduce by $d$): $q \leftarrow q - d$, queue place kept.
+- `E` (execute $d$): a fill at the order's own price, queue place kept for any remainder.
+- `U` (replace): the old id leaves, and a new id arrives at the tail of the new
+  level. A crossing replace executes first, as a limit would.
+
+The exact edge cases are pinned in `API_SPEC.md`.
+
+**Worked example.** Ids 1 (size 10) and 2 (size 5) rest at 100, id 1 first.
+Reduce id 1 by 4 and it stays first with size 6. Execute 2 against it: size 4,
+still first. Replace it with id 3 at the same price and size: the queue is now
+2, 3. The price and size did not change, yet the order lost its place. COOKBOOK
+recipe 13 runs this.
+
+### 10.2 Richer Hawkes models, and why one exponential misleads
+
+**The idea.** One exponential has a single memory length. If excitation has a
+fast part and a slow part, the fit settles on a compromise, and it can call slow
+excitation "baseline". Slow changes in the baseline can do the opposite and
+look like excitation.
+
+**Formally.** With a mixture of exponential densities,
+
+$$
+\lambda(t) = \mu(t) + \sum_k a_k \sum_{t_j < t} b_k e^{-b_k (t - t_j)},
+\qquad n = \sum_k a_k,
+$$
+
+where $a_k$ is the expected number of children through component $k$ and $n$ is
+the branching ratio. The O(N) recursion of section 3.5 runs once per component.
+A power-law (Lomax) tail $(a/c)(1 + t/c)^{-(a+1)}$ is a Gamma mixture of
+exponentials, so `fit_power_law` discretises it on 16 fixed rates with three
+kernel parameters $(n, a, c)$. Approximating a power law with exponentials on a
+geometric grid follows Bochud & Challet (2007) and Hardiman et al. (2013). A
+seasonal baseline makes $\mu(t)$ piecewise constant or a linear spline, fitted
+jointly with the kernel.
+
+**Worked example** (simulated paths, T = 1000, 60 paths per case):
+
+| Truth | Fitted model | Mean $\hat n$ | Note |
+|---|---|---|---|
+| two timescales, $n = 0.6$ | one exponential | 0.310 | KS rejects 3% of paths, Ljung-Box 82% |
+| two timescales, $n = 0.6$ | two exponentials | 0.596 | BIC beats one exponential on 98% |
+| power law, $n = 0.6$ | one exponential | 0.465 | |
+| power law, $n = 0.6$ | power-law mix | 0.606 | |
+| U-shaped $\mu(t)$, $n = 0.5$ | flat $\mu$, one exponential | 0.862 | |
+| U-shaped $\mu(t)$, $n = 0.5$ | spline, J by BIC | 0.518 | |
+
+So the error goes both ways, and a clean KS result does not catch it: in the first
+row KS rejects almost nothing while residual dependence is plain. These fits
+also knew the right family was among the candidates. A real kernel need not be.
+Non-stationarity inflating the branching ratio is discussed on real data by
+Filimonov & Sornette (2015); this repository has not tested that.
+
+### 10.3 Cost-aware labels
+
+**The idea.** "The mid went up" does not mean a taker made money, since a taker
+buys at the ask and sells at the bid. Label a row by what the round trip pays.
+
+**Formally.** Decide at $i$, enter at $e = i + \text{delay}$, exit at $x = e + H$,
+with fee $c$ per side:
+
+$$
+\text{long}_i = \text{bid}_x - \text{ask}_e - 2c, \qquad
+\text{short}_i = \text{bid}_e - \text{ask}_x - 2c.
+$$
+
+The label is UP if $\text{long}_i > \text{margin}$, DOWN if
+$\text{short}_i > \text{margin}$, and FLAT otherwise. Rows with an empty side are
+marked invalid.
+
+**Worked example.** Ask 101 at entry, bid 103 at exit, fee 0.1: long is
+$103 - 101 - 0.2 = 1.8$, so UP. If the bid at exit is 101, the mid may well have
+risen, but long is $-0.2$, so FLAT. Over 10 ZI streams with no fee or delay, the
+share of events where a long round trip pays is 0.011 at $H = 10$ and 0.203 at
+$H = 200$. The mean of the better round trip, which needs perfect foresight, is
+−0.861 ticks at $H = 10$. Models trained on these labels mostly learn not to
+trade at short horizons.
+
+### 10.4 The execution simulator
+
+**The idea.** A backtest replays a tape that cannot react to you. `lobmod.sim`
+puts agents' orders in a real book, behind a delay, among flow that responds to
+the book, so that queue position and stale quotes have a cost.
+
+**Formally.** Bivariate Hawkes market orders arrive with limit and cancel rates
+that depend on touch size and imbalance. This is in the spirit of queue-reactive
+models, with assumed rates. A hidden fair value jumps as a compound Poisson
+process, and informed takers hit quotes left stale by a jump. An agent sees data
+`md_latency` late, and its orders arrive `oe_latency` late. P&L for a fill with
+signed quantity $q$, price $p$, pre-trade mid $m_0$, mid $m_h$ one horizon later
+and final mid $m_T$ splits exactly:
+
+$$
+q(m_T - p) = \underbrace{q(m_0 - p)}_{\text{spread}}
++ \underbrace{q(m_h - m_0)}_{\text{adverse selection}}
++ \underbrace{q(m_T - m_h)}_{\text{inventory}}.
+$$
+
+Realised spread per lot at horizon $h$ is the mean of $\text{sign}\cdot(m_{t+h} - p)$.
+Three strategies are included: a touch-joining quoter, an Avellaneda-Stoikov
+quoter with a rolling horizon, and a taker that crosses stale quotes.
+
+**Worked example.** Naive maker, 10 ms one way, 20 seeds, 600 s, zero fees:
+spread 368.8, adverse −120.1, inventory 24.4, total 273.0 ticks per run (rounded
+terms). About a third of what it earned at the touch went to the next second's move.
+
+**Two caveats that change the reading.**
+
+- *The free fair-value feed.* Agents get a delayed view of the hidden fair value
+  at no cost, and that feed is what creates the cancel race. With it, the naive
+  maker gains 97.9 [72.7, 123.2] ticks going from 100 ms to 2 ms. Without it the
+  same difference is −4.7 [−34.2, 24.7]: the latency effect is not
+  distinguishable from zero. So the result is about the value of a fast signal
+  in this model. It is not a measurement of what latency is worth.
+- *Maker levels are not an edge.* Every parameter was set by judgement, and the
+  background book is not competitive, so nothing drives maker profit to zero
+  except the optional fast rival. Positive P&L reflects the assumed share of
+  uninformed flow. Only signs and orderings inside the model are worth reading.
+
+An older zero-intelligence replay showed P&L rising with a looser inventory cap.
+The attribution in `research/results_sim.md` traces most of that to the ZI mid
+mean-reverting, which is a property of the generator and not of the strategy.
+
+### 10.5 How FastBook differs
+
+**The idea.** The reference book favours clarity. Its cancel scans a queue, and
+its containers allocate. FastBook keeps the same matching rules and pays for
+speed by fixing its limits in advance.
+
+**Formally.** It has a flat ladder with one entry per tick in a fixed band, a
+hierarchical bitset to find the next live level, a node pool with an intrusive
+doubly linked FIFO per level (O(1) unlink), and an open-addressing id map. All
+memory is taken at construction. A limit outside the band returns an error even
+if it would have crossed, a full pool refuses every limit, prices are ticks
+only, and fills go to a caller's callback. There is no reduce, replace or
+execute, and no Java or Python version.
+
+**Worked example.** From `docs/LATENCY.md`, on a busy laptop under WSL2, book
+only: reverse cancel of 100,000 orders at one price costs a mean 48,528 / 46,204
+ns per cancel for the C++ reference book (two runs) and 16 / 40 ns for FastBook.
+Throughput on the mixed script is about 5x in C++ and 2.4x to 3.4x in Rust. Yet
+FastBook's passive add is no faster than the C++ reference at p50 and slower than
+the Rust one. A better worst case is not the same as a faster everything, and
+none of these figures is wire-to-wire.
+
+---
+
+## 11. Knowledge check
 
 **Q1. Why can the size-weighted mid (this project's `microprice`) say more
 about the next move than the mid?** Because it weights the quotes by *opposite* queue sizes:
@@ -836,29 +1003,34 @@ edge case and test in every language.)
 
 ---
 
-## 11. Topics not covered
+## 12. Topics not covered
 
 This lab stops well short of the field. These are the next things to read, and
-none of them is implemented here:
+they are not implemented here, except where an entry says otherwise:
 
 - **Kyle (1985)** and **Glosten-Milgrom (1985)**: price formation under informed
   trading, and why spreads exist at all.
-- **Avellaneda-Stoikov (2008)**: inventory-aware market-making quotes.
+- **Avellaneda-Stoikov (2008)**: inventory-aware market-making quotes. A
+  simplified version with a fixed rolling horizon is a strategy in `lobmod.sim`.
+  The derivation is not covered.
 - **Almgren-Chriss (2001)**: optimal execution against impact and risk.
 - **Propagator and square-root impact**: how impact builds and decays with size
   and time.
 - **Queue-reactive models** (Huang, Lehalle & Rosenbaum, 2015): order flow whose
-  rates depend on the book state.
-- **Realised spread** and **Lee-Ready (1991)** trade signing: how fills are
-  measured on real data.
+  rates depend on the book state. The simulator's limit and cancel rates react
+  to touch size and imbalance in that spirit, but with assumed rates. It is not
+  their model and nothing was estimated.
+- **Lee-Ready (1991)** trade signing: how trades are signed on real data. Not
+  implemented. Realised spread is implemented for simulated fills (section 10.4).
 - **Hasbrouck (1991, 1995)**: VAR models of trades and quotes, and information
   shares.
 - **The Epps effect**: correlations that shrink at short sampling intervals.
-- **Marked Hawkes processes**: excitation that depends on order size or type.
+- **Marked Hawkes processes**: excitation that depends on order size. The
+  bivariate model has event types only, so marks are not covered.
 
 ---
 
-## 12. Further reading
+## 13. Further reading
 
 - Hawkes (1971), *Spectra of some self-exciting and mutually exciting point
   processes*, Biometrika — the original.
@@ -868,6 +1040,12 @@ none of them is implemented here:
   Microstructure and Liquidity — the survey to read after this document.
 - Hardiman, Bercot & Bouchaud (2013), *Critical reflexivity in financial
   markets*, Eur. Phys. J. B — near-critical branching in real data.
+- Bochud & Challet (2007), *Optimal approximations of power laws with
+  exponentials*, Quantitative Finance — the exponential-mixture device.
+- Filimonov & Sornette (2015), *Apparent criticality and calibration issues in
+  the Hawkes self-excited point process model*, Quantitative Finance.
+- Avellaneda & Stoikov (2008), *High-frequency trading in a limit order book*,
+  Quantitative Finance — the quoting formula behind `sim.AvellanedaStoikov`.
 - Brown et al. (2002), *The time-rescaling theorem and its application*,
   Neural Computation — the GOF methodology, beautifully explained.
 - Cont, Kukanov & Stoikov (2014), *The price impact of order book events*,

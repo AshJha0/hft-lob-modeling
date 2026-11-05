@@ -17,13 +17,14 @@ This folder contains a self-contained landing page (`index.html`) for
 ## What is published
 
 - `docs/index.html` — the landing page (links into `LEARN.md`, `COOKBOOK.md`,
-  `API_SPEC.md`, `docs/ARCHITECTURE.md` and the diagrams on GitHub).
+  `API_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/LATENCY.md` and the research
+  results on GitHub).
 - Everything else under `docs/` is reachable by its path, e.g.
   `https://ashjha0.github.io/hft-lob-modeling/ARCHITECTURE.md` (served raw).
 
 ## Keeping it accurate
 
-The numbers block on the landing page ("Measured, not claimed") quotes the
-test counts and golden-case counts stated in `README.md`. When those change,
-update both places in the same commit — the page is static HTML and has no
-build step.
+The "Checked in CI" block on the landing page quotes the golden-case count and
+the bundled-data figures stated in `README.md`. When those change, update both
+places in the same commit. The page is static HTML and has no build step. Test
+counts are deliberately left to CI on both pages.

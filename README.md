@@ -1,8 +1,14 @@
 # High-Frequency LOB Modeling (`lobmod`)
 
-**This is a synthetic research and teaching lab.** It uses no real market data,
-measures no latency, and is not a trading system. Every result below describes
-simulated data. See [Limits](#limits) and [Known results](#known-results).
+**This is a synthetic research and teaching lab.** The bundled data and every
+result below are simulated. Book-only timings exist in
+[docs/LATENCY.md](docs/LATENCY.md), but nothing here measures wire-to-wire
+latency, the simulator is not calibrated to any market, and this is not a
+trading system. See [Limits](#limits) and [Known results](#known-results).
+
+Status: v1.2.0 is the latest release. Round 2 (L3 events, feed parser,
+simulator, richer models, FastBook) is merged and listed under `[Unreleased]`
+in [CHANGELOG.md](CHANGELOG.md).
 
 A four-language, cross-verified laboratory for high-frequency market microstructure:
 a price-time-priority **limit order book** simulator with deterministic replay, a pinned
@@ -12,6 +18,8 @@ time-rescaling goodness of fit, and an **order-flow feature pipeline** feeding a
 fully deterministic **neural network built from scratch** (no frameworks, no RNG) —
 closed out by an honest accounting of whether the predicted signal survives
 transaction costs. (Spoiler from the bundled data: gross +45.0 ticks, net −139.5.)
+Around that pinned core sit a Python research package, an execution simulator,
+a Python ITCH 5.0 parser, and a preallocated FastBook in C++ and Rust.
 
 Every numerical path is pinned by `API_SPEC.md` and verified against
 `data/golden/golden.json` (18 golden cases) in all four languages, plus
@@ -22,8 +30,9 @@ per-language suites of edge-case, invariant and cross-language parity tests
 
 | Component | Python | C++ | Rust | Java |
 |---|---|---|---|---|
-| Limit order book (price-time priority, partial fills, market orders walking the book) | `lobmod.book` | `lobmod::LimitOrderBook` | `lobmod::LimitOrderBook` | `com.quant.lobmod.LimitOrderBook` |
+| Limit order book (price-time priority, partial fills, market orders walking the book; `reduce`, `execute`, `replace`) | `lobmod.book` | `lobmod::LimitOrderBook` | `lobmod::LimitOrderBook` | `com.quant.lobmod.LimitOrderBook` |
 | Deterministic event replay + golden book snapshots | `lobmod.replay` | `lobmod::replay` | `lobmod::replay` | `Replay` |
+| Schema v2 events: nanosecond timestamps, types `R`, `U`, `E`; a v1 file also reads as v2 (`read_/write_events_v2_csv`, `replay_v2`) | `lobmod.replay` | `lobmod::…` (`replay.hpp`) | `lobmod::replay::…` | `Replay`, `EventV2` |
 | Event / event-time CSV i/o with pinned strict parsing (`read_/write_events_csv`, `read_/write_times_csv`, `read_/write_marked_times_csv`) | `lobmod.replay`, `lobmod.hawkes` | `lobmod::…` (`replay.hpp`, `hawkes.hpp`) | `lobmod::…` | `Replay`, `Hawkes` |
 | Zero-intelligence flow generator (seeded, pinned) | `lobmod.zi` | `lobmod::generate_events` | `lobmod::generate_events` | `ZiGenerator` |
 | Pinned 64-bit LCG (single RNG for the whole project) | `lobmod.rng.Lcg64` | `lobmod::Lcg64` | `lobmod::Lcg64` | `Lcg64` |
@@ -34,29 +43,48 @@ per-language suites of edge-case, invariant and cross-language parity tests
 | OFI / queue-imbalance features, 3-class direction labels | `lobmod.features` | `lobmod::compute_features` | `lobmod::compute_features` | `Features` |
 | MLP + logistic + majority baselines (deterministic, no RNG) | `lobmod.nn` | `lobmod::Mlp` | `lobmod::Mlp` | `Mlp` |
 | Signal PnL with half-spread costs | `signal_pnl` | ditto | ditto | ditto |
-| Golden-value test suite (18 cases) + edge-case suite | pytest (101) | GoogleTest (90) | cargo test (94) | JUnit 4 (84) |
+| Golden-value test suite (18 cases) + edge-case suite | pytest | GoogleTest | cargo test | JUnit 4 |
+| Preallocated FastBook, tested against the reference book | none | `lobmod::fast::FastBook` (`cpp/fast/`) | `lobmod::fast_book::FastBook` | none |
+| Book benchmark | none | `fast_book_bench` | `bench` binary | none |
+| ITCH 5.0 parser and book-integrity checker, tested on hand-built fixtures | `lobmod.feeds` | none | none | none |
+| Hawkes standard errors, LR tests, bootstrap goodness of fit, walk-forward evaluation, taker backtest, passive maker | `lobmod.research` | none | none | none |
+| Multi-exponential and power-law kernels, seasonal baselines, cost-aware labels, boosted trees | `lobmod.research.kernels`, `.seasonality`, `.labels`, `.baselines` | none | none | none |
+| Execution simulator: queues, latency, informed flow, fees, attribution | `lobmod.sim` | none | none | none |
+| libFuzzer harnesses (not in CI) | none | `fuzz/` | none | none |
+
+Only the rows down to the golden suite, plus the book operations and v2 schema,
+are in the four-language contract. The rows below it have no golden values.
 
 ## Directory layout
 
 ```
 hft-lob-modeling/
-  README.md, LEARN.md, COOKBOOK.md, API_SPEC.md, LICENSE (MIT)
+  README.md, LEARN.md, COOKBOOK.md, API_SPEC.md, CHANGELOG.md, LICENSE (MIT)
   docs/
     ARCHITECTURE.md          # design, data flow, Mermaid diagrams
+    LATENCY.md               # book-only timings: reference book and FastBook
     GITHUB_PAGES.md          # the docs site (live at https://ashjha0.github.io/hft-lob-modeling/) and how to publish it
+    index.html               # the docs site landing page
     diagrams/*.mmd           # raw Mermaid sources
   data/
     lob_events.csv           # 5000-event deterministic ZI stream (seed 20240613)
+    lob_events_v2.csv        # 17-event v2 fixture, with its expected final state
     hawkes_uni.csv           # 1211 univariate Hawkes event times (seed 101)
     hawkes_biv.csv           # 611 bivariate events, t + type (seed 33)
     dgp_params.json          # true DGP parameters + pinned eval points
     features_config.json     # H, epsilon, windows, NN hyperparameters
     generate_data.py         # regenerates everything (fixed seeds)
     golden/golden.json       # 18 cross-language golden cases
-  python/   src/lobmod/*.py, tests/, demo.py, requirements.txt
+  python/   src/lobmod/*.py (pinned core), tests/, demo.py, requirements.txt
+            src/lobmod/feeds/     # ITCH 5.0 parser, book-integrity checker
+            src/lobmod/research/  # inference, evaluation, kernels, labels, backtest
+            src/lobmod/sim/       # execution simulator and accounting
   cpp/      CMakeLists.txt, include/lobmod/*.hpp, src/, tests/, build.sh
-  rust/     Cargo.toml, src/lib.rs, src/bin/demo.rs, tests/
+            fast/                 # FastBook header and benchmark
+  rust/     Cargo.toml, src/lib.rs, src/fast_book.rs, src/bin/{demo,bench}.rs, tests/
   java/     src/main/java/com/quant/lobmod/*.java, src/test/..., build.sh, test.sh, demo.sh
+  research/ run_all.py, run_models.py, run_sim.py and their generated results*.md
+  fuzz/     libFuzzer harnesses for the C++ book and CSV code, run.sh, README.md
 ```
 
 ## Build, run, test
@@ -79,7 +107,7 @@ PYTHONPATH=src python3 -m pytest -q      # incl. the golden suite
 cd cpp
 bash build.sh    # cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j2
 ./build/demo                                  # demo
-ctest --test-dir build --output-on-failure    # 90 GoogleTest cases (one ctest entry)
+ctest --test-dir build --output-on-failure    # GoogleTest suite and FastBook tests
 ```
 
 ### Rust (edition 2021, cargo 1.95)
@@ -87,7 +115,7 @@ ctest --test-dir build --output-on-failure    # 90 GoogleTest cases (one ctest e
 ```bash
 cd rust
 cargo run --release --bin demo   # demo
-cargo test --release             # 94 unit + integration + golden tests
+cargo test --release             # unit, integration, property and golden tests
 ```
 
 `cargo build --release` produces zero warnings; the dev profile also builds
@@ -100,6 +128,23 @@ cd java
 bash build.sh    # javac -Xlint:all -Werror everything into out/
 bash demo.sh     # runs the demo main
 bash test.sh     # JUnitCore on all *Test classes
+```
+
+### Benchmarks and research scripts
+
+```bash
+# Book-only timings, Linux or WSL; method and caveats are in docs/LATENCY.md
+cmake -S cpp/fast -B build-fast -DCMAKE_BUILD_TYPE=Release
+cmake --build build-fast -j
+build-fast/fast_book_bench 2000000 20000 5
+(cd rust && cargo run --release --bin bench -- 2000000 20000 5)
+
+# Regenerate the research tables from the repository root
+PYTHONPATH=python/src python3 research/run_all.py      # research/results.md
+PYTHONPATH=python/src python3 research/run_models.py   # research/results_models.md
+PYTHONPATH=python/src python3 research/run_sim.py      # research/results_sim.md
+
+sh fuzz/run.sh 60     # needs clang; seconds per harness, see fuzz/README.md
 ```
 
 ## Demo output (Python, truncated)
@@ -192,8 +237,12 @@ statistical tests required by `API_SPEC.md` §10, and an edge-case suite that
 was added after an external review (tick-0 and 64-bit tick handling, CSV
 robustness, pure optimizer objectives, Poisson and single-event limits,
 small-λ KS accuracy, label validation, `ofi_at` boundary, depth monotonicity,
-and byte-identical regeneration of every bundled file from its seed). Current
-counts are in CI, which runs all four suites on every push.
+and byte-identical regeneration of every bundled file from its seed). Python
+also has suites for the feed parser, research tools and simulator. Rust, Java
+and Python check the book against a naive model with property tests, and the
+C++ and Rust FastBook tests compare it with the reference book on randomized
+scripts. The fuzz harnesses are run by hand and are not in CI. Current counts
+are in CI, which runs all four suites on every push.
 
 ## Cross-language golden testing
 
@@ -251,12 +300,18 @@ What a practitioner gets, precisely:
   never an exception), `converged=false` means the iteration cap stopped the
   search, and every loop has a documented bound (simulators: 5·10⁷
   candidates).
-- **Deliberately out of scope.** Timestamps and clock-time windows, calendars
-  and trading sessions, day-count conventions, order-lifecycle messages beyond
-  add / full cancel / market (no reduce, replace, iceberg, auction or halt
-  states), fees, latency, fill probability, queue-position tracking, standard
-  errors / Hessians for the Hawkes MLE, tie-breaking of duplicate timestamps
-  in real data (reject and pre-process), and multi-venue books.
+- **Where the round 2 features live.** Nanosecond timestamps and
+  `reduce`/`replace`/`execute` are in the book and v2 schema of all four ports.
+  Fees, latency, queue-position tracking and fill statistics are in `lobmod.sim`,
+  and the taker backtest has a fee and an event-count delay. Standard errors for
+  the Hawkes MLE are in `lobmod.research`. None of these is in the golden
+  contract except the book operations and v2 schema. Feature windows, lookback
+  and horizon in the pinned pipeline are still counted in events.
+- **Still absent.** Auctions, halts as book states (the parser reports trading
+  actions but the book ignores them), iceberg and hidden orders in the book,
+  multi-venue books, calendars and sessions, day-count conventions, tie-breaking
+  of duplicate timestamps in real data (reject and pre-process), and calibration
+  of the simulator or any model to real data.
 - **Memory.** `trades` (and Python/C++ `log`) grow for the life of a book;
   pass `record_trades=False` / call `clear_history()` when replaying a full
   day.
@@ -273,7 +328,14 @@ What a practitioner gets, precisely:
 
 - All data is synthetic. Nothing here is evidence about real markets; a
   parameter recovered from the bundled data is one the generator put there.
-- No latency is measured, and no real feed, venue or order gateway is involved.
+- Book-only timings exist ([docs/LATENCY.md](docs/LATENCY.md), a noisy laptop
+  under WSL2). There is no wire-to-wire figure, and no feed handler, venue or
+  order gateway is involved.
+- The simulator is uncalibrated: every parameter is assumed, so its P&L levels
+  mean nothing. Its agents also get a free fair-value feed. Without that feed
+  the latency effect is not distinguishable from zero (2 ms minus 100 ms:
+  −4.7 [−34.2, 24.7] ticks, [research/results_sim.md](research/results_sim.md)).
+  Positive maker P&L is not an edge.
 - The zero-intelligence generator is inspired by Smith et al. (2003) but differs
   from it (geometric placement off the opposite best, no event clock).
 - KS on fitted parameters is a weak test: 0/400 rejections at 5% under the true
@@ -284,8 +346,13 @@ What a practitioner gets, precisely:
 
 ## Known results
 
-Multi-seed model comparison, bootstrap goodness of fit, the executable backtest
-and the maker simulator are in [research/results.md](research/results.md).
+All synthetic. Multi-seed model comparison, bootstrap goodness of fit, the
+executable backtest and the maker simulator are in
+[research/results.md](research/results.md). Kernels, seasonality, cost-aware
+labels and boosted trees are in
+[research/results_models.md](research/results_models.md). The execution
+simulator is in [research/results_sim.md](research/results_sim.md), and book
+timings are in [docs/LATENCY.md](docs/LATENCY.md).
 
 ## References
 
@@ -308,6 +375,8 @@ Works the code implements or the documentation relies on:
 - Virtanen, P. et al. (2020). "SciPy 1.0: fundamental algorithms for scientific computing in Python." *Nature Methods* 17, 261–272. https://doi.org/10.1038/s41592-019-0686-2 — the initial-simplex and acceptance conventions of `scipy.optimize.minimize(method="Nelder-Mead")` that the optimizer pins.
 - Bishop, C. M. (2006). *Pattern Recognition and Machine Learning*, §5.3 (error backpropagation). Springer. ISBN 978-0-387-31073-2 — the MLP gradients (`nn`).
 - He, K., Zhang, X., Ren, S., Sun, J. (2015). "Delving deep into rectifiers: surpassing human-level performance on ImageNet classification." *Proceedings of the IEEE ICCV*, 1026–1034. https://doi.org/10.1109/ICCV.2015.123 (arXiv:1502.01852) — source of the √(2/n_in) term; the pinned init is smaller than He (variance about 8x below).
+- Avellaneda, M., Stoikov, S. (2008). "High-frequency trading in a limit order book." *Quantitative Finance* 8(3), 217–224. https://doi.org/10.1080/14697680701381228 — the quoting formula of `sim.AvellanedaStoikov`, used with a rolling horizon.
+- Hardiman, S. J., Bercot, N., Bouchaud, J.-P. (2013). "Critical reflexivity in financial markets: a Hawkes process analysis." *European Physical Journal B* 86, 442. https://doi.org/10.1140/epjb/e2013-40107-3 — approximating a power-law kernel with exponentials (`research.kernels`).
 - Knuth, D. E. (1997). *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, 3rd ed., §3.3.4 (MMIX LCG constants). Addison-Wesley. ISBN 978-0-201-89684-8 — the pinned 64-bit LCG (`Lcg64`).
 
 ## License
