@@ -2,6 +2,8 @@
 
   python research/calibrate.py hawkes DATA_DIR [--workers 4] [SYMBOL ...]
   python research/calibrate.py fit DATA_DIR [--workers 5] [SYMBOL ...]
+  python research/calibrate.py fit2 DATA_DIR [--workers 5] [SYMBOL ...]
+  python research/calibrate.py heldout DATA_DIR [--workers 5] [SYMBOL ...]
 
 Both read DATA_DIR/extract/*.npz and write results into DATA_DIR only: every number
 they produce derives from licensed data and stays out of the repository.
@@ -14,6 +16,10 @@ after merging same-side orders closer than 1 ms.
 
 ``fit``: fit on the morning window, judge against
 research/calibration_criteria.md in sample and on the afternoon window.
+
+``fit2``: model v2, fitted and judged on the whole of 10:00 to 15:30, with morning
+and afternoon rows as in-sample diagnostics.  ``heldout``: the fit2 parameters
+against DATA_DIR/heldout/extract, once; it refuses to overwrite an earlier result.
 """
 import argparse
 import json
@@ -34,7 +40,8 @@ from lobmod.gof import ks_test_exp
 from lobmod.research.kernels import FlatBaseline, fit_fixed_mixture, fit_power_law, fit_residuals, fit_sum_exp
 from lobmod.research.seasonality import LinearSplineBaseline
 from lobmod.sim.calibrate import (
-    MEAN_LIMIT_LOTS, build_stats, evaluate, mean_stats, moment_fit, refine, simulate_stats,
+    MEAN_LIMIT_LOTS, REFINED_V2, build_stats, evaluate, mean_stats, moment_fit, refine, simulate_stats,
+    structural_fit,
 )
 from real_replay import BUCKET_NS, TICK, aggregate_signs
 
@@ -176,30 +183,82 @@ def fit_one(job):
                  'seconds': round(time.time() - t0)}
 
 
-def verdict(res):
+def activity_ratio(a, lo, hi, width_ns=300 * 10 ** 9):
+    """Busy over quiet event rate: 90th over 10th percentile of five-minute counts."""
+    n = np.histogram(a['ev_ts'], np.arange(lo, hi + 1, width_ns))[0]
+    return float(np.clip(np.percentile(n, 90) / max(np.percentile(n, 10), 1.0), 1.0, 6.0))
+
+
+def fit2_one(job):
+    data, sym = job
+    t0 = time.time()
+    a = load(data, sym)
+    m = (a['ev_ts'] >= START) & (a['ev_ts'] < END) & (a['ev_code'] // 2 == 0)
+    lot = float(a['ev_size'][m].mean()) / MEAN_LIMIT_LOTS
+    real = real_stats(a, START, END, lot)
+    ts, _ = order_times(a, START, END)
+    t = (ts - START) / 1e9
+    h = fit_sum_exp(t[t > 0], (END - START) / 1e9, 1, n_starts=1)
+    start = structural_fit(real, moment_fit(real, branching=min(h.branching, 0.9), beta=float(h.betas[0])),
+                           activity_ratio(a, START, END))
+
+    def sim(flow):
+        try:
+            return simulated(flow, FIT_SEEDS, FIT_T)
+        except ValueError:
+            return {**real, 'event_rate': 100.0 * real['event_rate']}
+
+    res = refine(real, start, sim, BUDGET, REFINED_V2)
+    print(f'{sym} refined {res.start_value:.1f} -> {res.value:.1f} in {time.time() - t0:.0f}s', flush=True)
+    paths = simulated(res.flow, CHECK_SEEDS, CHECK_T)
+    morning, afternoon = real_stats(a, START, MIDDAY, lot), real_stats(a, MIDDAY, END, lot)
+    return sym, {'lot_shares': lot, 'flow': asdict(res.flow), 'distance': res.value, 'real': real, 'sim': paths,
+                 'in_sample': evaluate(paths, real), 'morning': evaluate(paths, morning),
+                 'afternoon': evaluate(paths, afternoon), 'seconds': round(time.time() - t0)}
+
+
+def heldout_one(job):
+    data, sym, fitted = job
+    a = load(Path(data) / 'heldout', sym)
+    real = real_stats(a, START, END, fitted['lot_shares'])
+    return sym, {'real': real, 'held_out': evaluate(fitted['sim'], real)}
+
+
+def verdict(res, names=('in_sample', 'within_day')):
     out = {}
-    for name in ('in_sample', 'within_day'):
+    for name in names:
         rows = {s: r[name] for s, r in res.items()}
         passed = [s for s, r in rows.items() if all(v['passed'] for v in r.values())]
         out[name] = {'symbols_passed': passed, 'model_pass': len(passed) >= 8,
                      'row_passes': {k: sum(r[k]['passed'] for r in rows.values()) for k in next(iter(rows.values()))}}
-    out['held_out_day'] = 'NOT DONE: needs a second file'
     return out
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('mode', choices=('hawkes', 'fit'))
+    ap.add_argument('mode', choices=('hawkes', 'fit', 'fit2', 'heldout'))
     ap.add_argument('data')
     ap.add_argument('symbols', nargs='*', default=list(SYMBOLS))
     ap.add_argument('--workers', type=int, default=4)
     a = ap.parse_args()
-    fn = hawkes_one if a.mode == 'hawkes' else fit_one
+    if a.mode == 'heldout':
+        target = Path(a.data) / 'heldout_results.json'
+        if target.exists():
+            raise SystemExit('held-out result exists: the test runs once')
+        fitted = json.loads((Path(a.data) / 'calibration_v2_results.json').read_text())['symbols']
+        with ProcessPoolExecutor(a.workers) as ex:
+            res = dict(ex.map(heldout_one, [(a.data, s, fitted[s]) for s in a.symbols]))
+        target.write_text(json.dumps({'symbols': res, 'verdict': verdict(res, ('held_out',))}, indent=1, default=str))
+        print('written', target.name, flush=True)
+        return
+    fn = {'hawkes': hawkes_one, 'fit': fit_one, 'fit2': fit2_one}[a.mode]
     with ProcessPoolExecutor(a.workers) as ex:
         res = dict(ex.map(fn, [(a.data, s) for s in a.symbols]))
-    if a.mode == 'fit':
-        res = {'symbols': res, 'verdict': verdict(res)}
-    name = 'hawkes_results.json' if a.mode == 'hawkes' else 'calibration_results.json'
+    if a.mode != 'hawkes':
+        names = ('in_sample', 'morning', 'afternoon') if a.mode == 'fit2' else ('in_sample', 'within_day')
+        res = {'symbols': res, 'verdict': verdict(res, names)}
+    name = {'hawkes': 'hawkes_results.json', 'fit': 'calibration_results.json',
+            'fit2': 'calibration_v2_results.json'}[a.mode]
     (Path(a.data) / name).write_text(json.dumps(res, indent=1, default=str))
     print('written', name, flush=True)
 

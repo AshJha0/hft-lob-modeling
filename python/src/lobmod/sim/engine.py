@@ -28,7 +28,7 @@ from ..book import LimitOrderBook
 from ..hawkes import simulate_biv
 
 _AGENT_ID0 = 10 ** 12
-_MD, _SIG, _REPORT, _NEW, _CXL, _TAKE, _INFORMED = range(7)
+_MD, _SIG, _REPORT, _NEW, _CXL, _TAKE, _INFORMED, _SWITCH = range(8)
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,11 @@ class FlowParams:
     anchor_tau: float = 0.2        # background's lag behind fair value, seconds
     p_geometric: float = 0.5       # placement depth
     start_price: int = 10000
+    sign_persist: float = 0.0      # lag-1 memory of aggressive side; 0 keeps the Hawkes side
+    impact: float = 0.0            # permanent fair-value move per aggressive lot, ticks
+    active_mult: float = 1.0       # rate in the active state over the calm state; 1 = off
+    active_share: float = 0.2      # long-run share of time in the active state
+    active_dwell: float = 300.0    # mean active spell, seconds
 
 
 @dataclass(frozen=True)
@@ -145,10 +150,13 @@ class Simulator:
         self.flow, self.T, self.seed = flow, float(T), int(seed)
         self.book = LimitOrderBook(1.0, record_trades=False)
         self.agents = [_Agent(a) for a in agents]
-        ss = np.random.SeedSequence(self.seed).spawn(3)
+        ss = np.random.SeedSequence(self.seed).spawn(5)
         self._rng_fair = np.random.default_rng(ss[0])
         self._rng_bg = np.random.default_rng(ss[1])
         self._hawkes_seed = int(ss[2].generate_state(1)[0]) | 1
+        self._rng_side = np.random.default_rng(ss[3])
+        self._rng_state = np.random.default_rng(ss[4])
+        self.activity = 1.0
         self._ubuf: List[float] = []
         self.fair = self.anchor = float(flow.start_price)
         self.t_anchor = 0.0
@@ -323,13 +331,14 @@ class Simulator:
 
     def _bg_rates(self) -> List[float]:
         p = self.flow
+        m = self.activity
         total = self.bid_size + self.ask_size
         imb = (self.bid_size - self.ask_size) / total if total else 0.0
         return [
-            p.limit_rate * (1.0 + p.imbalance_limit * imb) / (1.0 + self.bid_size / p.queue_scale),
-            p.limit_rate * (1.0 - p.imbalance_limit * imb) / (1.0 + self.ask_size / p.queue_scale),
-            p.cancel_rate * len(self.bg_ids["B"]) * (1.0 - p.imbalance_cancel * imb),
-            p.cancel_rate * len(self.bg_ids["S"]) * (1.0 + p.imbalance_cancel * imb),
+            m * p.limit_rate * (1.0 + p.imbalance_limit * imb) / (1.0 + self.bid_size / p.queue_scale),
+            m * p.limit_rate * (1.0 - p.imbalance_limit * imb) / (1.0 + self.ask_size / p.queue_scale),
+            m * p.cancel_rate * len(self.bg_ids["B"]) * (1.0 - p.imbalance_cancel * imb),
+            m * p.cancel_rate * len(self.bg_ids["S"]) * (1.0 + p.imbalance_cancel * imb),
             p.refresh_rate,
         ]
 
@@ -379,6 +388,9 @@ class Simulator:
         mid_pre = self.mid
         fills, _ = self.book.market(side, size)
         self._settle(fills, t, side, None, False, mid_pre)
+        if self.flow.impact:
+            self._advance_anchor(t)
+            self.fair += (1.0 if side == "B" else -1.0) * self.flow.impact * size
         self._touch(t)
 
     def _informed(self, t: float) -> None:
@@ -443,10 +455,44 @@ class Simulator:
         self._decide(ag, t)
 
     # -------------------------------------------------------------- main loop
+    def _activity_path(self) -> tuple:
+        """State switch times and levels; the time-average level is one."""
+        p = self.flow
+        calm = 1.0 / (1.0 - p.active_share + p.active_share * p.active_mult)
+        calm_dwell = p.active_dwell * (1.0 - p.active_share) / p.active_share
+        t, active = 0.0, False
+        ts, levels = [0.0], [calm]
+        while True:
+            t += self._rng_state.exponential(p.active_dwell if active else calm_dwell)
+            if t >= self.T:
+                return np.asarray(ts), np.asarray(levels)
+            active = not active
+            ts.append(t)
+            levels.append(calm * p.active_mult if active else calm)
+
+    def _chain_sides(self, n: int) -> List[int]:
+        """Two-state chain with lag-1 autocorrelation ``sign_persist``; 0 buy, 1 sell."""
+        flips = self._rng_side.random(n) < 0.5 * (1.0 - self.flow.sign_persist)
+        start = int(self._rng_side.integers(0, 2))
+        return ((start + np.cumsum(flips)) % 2).tolist()
+
     def run(self) -> SimResult:
         p = self.flow
-        times, types = simulate_biv(p.mu, [list(r) for r in p.alpha], p.beta, self.T, self._hawkes_seed)
+        horizon = self.T
+        if p.active_mult != 1.0:
+            sw_t, sw_m = self._activity_path()
+            clock = np.append(sw_t, self.T)
+            busy = np.concatenate([[0.0], np.cumsum(sw_m * np.diff(clock))])
+            horizon = float(busy[-1])
+            self.activity = float(sw_m[0])
+            for t_s, m_s in zip(sw_t[1:].tolist(), sw_m[1:].tolist()):
+                self._push(t_s, _SWITCH, m_s)
+        times, types = simulate_biv(p.mu, [list(r) for r in p.alpha], p.beta, horizon, self._hawkes_seed)
+        if p.active_mult != 1.0:      # busy time back to clock time
+            times = np.interp(times, busy, clock)
         times, types = times.tolist(), types.tolist()
+        if p.sign_persist:
+            types = self._chain_sides(len(times))
         sizes = (1 + self._rng_fair.integers(0, 3, len(times))).tolist()
         n_j = int(self._rng_fair.poisson(p.jump_rate * self.T))
         jump_t = np.sort(self._rng_fair.uniform(0.0, self.T, n_j)).tolist()
@@ -487,6 +533,8 @@ class Simulator:
                 elif code == _TAKE:
                     a.taking = False
                     self._ioc(b[0], b[1], a.spec.size, t, a, False)
+                elif code == _SWITCH:
+                    self.activity = a
                 else:
                     self._informed(t)
             elif t == t_j:

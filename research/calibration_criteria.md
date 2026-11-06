@@ -47,4 +47,14 @@ A symbol passes an evaluation only if every row passes. The simulator passes an 
 
 ## Change log
 
-None so far.
+### 2026-11-06: model v2, written before any v2 fit
+
+The v1 result stands: it failed, and that record is not changed. The rule that simulator code is not changed to help a statistic pass applied to the v1 evaluation. v2 is a new model, judged as a new evaluation. Every tolerance and the 8 of 10 pass mark are unchanged.
+
+Why the model changed. A look at the v1 failures, using the fit day only, found four things. The fall in activity after midday is real, not an extract fault, and much of it is one burst late in the morning, so a fixed clock-time curve would memorise that day. The Hawkes rate sat on its upper bound for every symbol. Lag-1 sign memory was too weak and no fitted parameter could move it. Prices moved mainly by exogenous jumps, so order flow explained too little of them.
+
+What v2 adds, all off by default: a two-state activity level with a mean multiplier of one, a Markov chain for aggressive-order side, and a permanent impact of aggressive orders on fair value. Impact joins the refined parameters. Fit budget and paths are unchanged.
+
+Windows change. v2 is fitted on the whole of 10:00 to 15:30 of the first day and judged on that same window, so the afternoon is no longer unseen. Morning and afternoon rows are still reported, for comparison with v1, but they are in-sample diagnostics. The only out-of-sample evaluation is the held-out day, the second file, now available: the same parameters against its 10:00 to 15:30 window, run once. It is reported whatever the outcome, and no change follows it.
+
+Known limit. Order timing below one millisecond is not modelled; no criterion row depends on it, and the rate bound remains.

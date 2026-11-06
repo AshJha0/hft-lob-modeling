@@ -169,3 +169,29 @@ def test_legacy_split_is_exact_and_stream_mean_reverts():
     r = legacy_maker(7919, 0, 5, fee=0.1, n=2000)
     assert r["spread"] + r["position"] + r["fees"] == pytest.approx(r["pnl"], abs=1e-6)
     assert variance_ratio(7919, (1000,), n=8000)[1000] < 1.0
+
+
+def test_v2_flow_defaults_are_off_and_features_work():
+    import dataclasses
+
+    import numpy as np
+
+    from lobmod.sim.calibrate import simulate_stats
+    from lobmod.sim.engine import FlowParams, Simulator
+
+    base = FlowParams()
+    a = Simulator(base, [], 120.0, 5).run()
+    b = Simulator(dataclasses.replace(base, active_share=0.4, active_dwell=9.0), [], 120.0, 5).run()
+    assert a.n_events == b.n_events and np.array_equal(a.mid, b.mid)   # inert while multiplier is 1
+
+    plain = simulate_stats(base, 900.0, 3)
+    sticky = simulate_stats(dataclasses.replace(base, sign_persist=0.7), 900.0, 3)
+    assert sticky["sign_acf"][0] > plain["sign_acf"][0] + 0.2
+
+    burst = dataclasses.replace(base, active_mult=4.0, active_dwell=30.0)
+    rates = [simulate_stats(burst, 900.0, s)["order_rate"] for s in (1, 2, 3)]
+    assert 0.6 < np.mean(rates) / plain["order_rate"] < 1.6            # mean level kept
+
+    moved = Simulator(dataclasses.replace(base, impact=0.5, jump_rate=0.0), [], 300.0, 3).run()
+    still = Simulator(dataclasses.replace(base, jump_rate=0.0), [], 300.0, 3).run()
+    assert moved.final_fair != 10000.0 and still.final_fair == 10000.0
