@@ -1135,7 +1135,9 @@ to the point where your agent starts to change it.
 
 Model v2 adds `sign_persist` (lag-1 memory of aggressive side), `impact` (permanent
 fair-value move per aggressive lot) and `active_mult`, `active_share`, `active_dwell`
-(a two-state activity level whose mean multiplier is one). All are off by default.
+(a two-state activity level whose mean multiplier is one). Model v3 adds
+`book_feedback` (share of an aggressive order's mid move kept in fair value) and
+`burst_prob`, `burst_gap` (same-side order bursts). All are off by default.
 
 | To change | Parameter |
 |---|---|

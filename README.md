@@ -9,7 +9,7 @@ latency, the simulator is not calibrated to any market (an attempt failed), and
 this is not a trading system. See [Real data](#real-data), [Limits](#limits) and
 [Known results](#known-results).
 
-Status: v1.4.0. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Status: v1.5.0. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 A four-language, cross-verified laboratory for high-frequency market microstructure:
 a price-time-priority **limit order book** simulator with deterministic replay, a pinned
@@ -237,9 +237,13 @@ the spread on every trade erases the gross PnL. See research/results.md.
 demo complete.
 ```
 
+## New in v1.5.0
+
+Simulator model v3 in `lobmod.sim`: `book_feedback` keeps part of each aggressive order's mid move in fair value, and `burst_prob` and `burst_gap` add same-side order bursts. Both are off by default. Row C7 compares short gaps between aggressive orders. The calibration attempt failed; see the note on calibration below. The burst layer did not reproduce real gap shares for most symbols, so do not use the simulator for latency or queue-position conclusions at millisecond scale.
+
 ## New in v1.4.0
 
-Simulator model v2 in `lobmod.sim`: a two-state activity level, memory in aggressive-order side, and permanent impact of aggressive orders on fair value. All three are off by default, so earlier paths are unchanged. The calibration attempt with them failed; see the note on calibration below. Order timing below one millisecond is not modelled, so do not use the simulator for latency or queue-position conclusions at that scale.
+Simulator model v2 in `lobmod.sim`: a two-state activity level, memory in aggressive-order side, and permanent impact of aggressive orders on fair value. All three are off by default, so earlier paths are unchanged. The calibration attempt with them failed; see the note on calibration below.
 
 ## New in v1.3.0
 
@@ -258,7 +262,7 @@ These sit beside the pinned core. Only the book operations and the v2 event sche
 
 The parser and book were replayed on public ITCH 5.0 sample files for ten symbols with no parser or book anomalies and every execution at the touch. That is internal consistency, not comparison with a venue snapshot. Raw data is not redistributed. Nasdaq-derived numbers do not appear in this repository.
 
-Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED twice. Model v1 (v1.3.0) did not meet the criteria in sample and its parameters did not carry across the day. Model v2 (v1.4.0) added an activity state, side memory and flow impact; sign memory improved, but it also missed the pass mark in sample, and order flow still explains too little of simulated price moves for most symbols. It stopped at a checkpoint set before the fit, so the held-out day has not been run and stays unused. The simulator remains uncalibrated and its P&L levels mean nothing.
+Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED three times. Model v1 (v1.3.0) did not meet the criteria in sample and its parameters did not carry across the day. Model v2 (v1.4.0) added an activity state, side memory and flow impact; sign memory improved, but it also missed the pass mark in sample. Model v3 (v1.5.0) added book-driven price moves and order bursts. Order flow explained simulated prices better on liquid symbols, but thin symbols stayed poor, volatility and sign memory got worse, and no symbol passed every row in sample. v2 and v3 each stopped at a checkpoint set before the fit, so the held-out day has not been run and stays unused. The simulator remains uncalibrated and its P&L levels mean nothing.
 
 Hawkes on real trades, qualitative only: a seasonal two-timescale model is preferred over a single exponential, but the fast rate hits its bound and branching is not resolved, so no value is quoted. Sub-millisecond burst structure cannot be attributed to a mechanism from this feed.
 
