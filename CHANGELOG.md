@@ -5,6 +5,27 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-06
+
+### Added
+
+- Simulator model v2: `FlowParams` fields `sign_persist`, `impact`, `active_mult`, `active_share` and `active_dwell`, all off by default, so earlier paths are unchanged.
+- `lobmod.sim.calibrate.structural_fit` and `REFINED_V2`; `refine` takes the names to search.
+- `fit2` and `heldout` modes in `research/calibrate.py`. `heldout` refuses to run a second time.
+
+### Changed
+
+- `research/calibration_criteria.md` logs the v2 design, written before any v2 fit, and its result. Tolerances and the pass mark are unchanged.
+- GitHub Actions: checkout v7, setup-java v6, setup-python v7, upload-artifact v7. Rust: serde_json 1.0.154.
+
+### Results
+
+- **Failed:** calibration of model v2, against the same criteria. Sign memory improved, but the model missed the pass mark in sample and stopped at a checkpoint set before the fit. The held-out day was extracted locally and not read or tested. The simulator remains uncalibrated.
+
+### Known limits
+
+- Order timing below one millisecond is not modelled: the fitted Hawkes decay rate sits on its upper bound.
+
 ## [1.3.0] - 2026-11-05
 
 ### Added

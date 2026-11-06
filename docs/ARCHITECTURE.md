@@ -532,7 +532,7 @@ touch. That is internal consistency, not comparison with a venue snapshot. Raw d
 is not redistributed. `research/iex_replay.py` does the same job for IEX HIST
 captures and has run once on one real DEEP+ file (`research/results_iex.md`).
 Calibration of `lobmod.sim` against `research/calibration_criteria.md`
-failed: see the README.
+failed for models v1 and v2, and the held-out day is unused: see the README.
 
 ## Diagrams of the later layers
 

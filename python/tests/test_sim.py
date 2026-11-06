@@ -7,10 +7,21 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 from lobmod.sim import (
-    AgentSpec, AvellanedaStoikov, Fees, FlowParams, NaiveTouch, SignalTaker, Simulator, assess_edge,
-    attribute, fill_prob_by_queue, legacy_maker, realised_spread, summarise, variance_ratio,
+    AgentSpec,
+    AvellanedaStoikov,
+    Fees,
+    FlowParams,
+    NaiveTouch,
+    SignalTaker,
+    Simulator,
+    assess_edge,
+    attribute,
+    fill_prob_by_queue,
+    legacy_maker,
+    realised_spread,
+    summarise,
+    variance_ratio,
 )
 
 FLOW = FlowParams()
@@ -175,7 +186,6 @@ def test_v2_flow_defaults_are_off_and_features_work():
     import dataclasses
 
     import numpy as np
-
     from lobmod.sim.calibrate import simulate_stats
     from lobmod.sim.engine import FlowParams, Simulator
 

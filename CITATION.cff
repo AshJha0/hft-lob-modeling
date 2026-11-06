@@ -6,6 +6,6 @@ type: software
 authors:
   - family-names: Jha
     given-names: Ashish
-version: 1.3.0
+version: 1.4.0
 license: MIT
 repository-code: "https://github.com/AshJha0/hft-lob-modeling"
