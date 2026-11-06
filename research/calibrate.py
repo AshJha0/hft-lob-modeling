@@ -3,6 +3,7 @@
   python research/calibrate.py hawkes DATA_DIR [--workers 4] [SYMBOL ...]
   python research/calibrate.py fit DATA_DIR [--workers 5] [SYMBOL ...]
   python research/calibrate.py fit2 DATA_DIR [--workers 5] [SYMBOL ...]
+  python research/calibrate.py fit3 DATA_DIR [--workers 5] [SYMBOL ...]
   python research/calibrate.py heldout DATA_DIR [--workers 5] [SYMBOL ...]
 
 Both read DATA_DIR/extract/*.npz and write results into DATA_DIR only: every number
@@ -18,7 +19,8 @@ after merging same-side orders closer than 1 ms.
 research/calibration_criteria.md in sample and on the afternoon window.
 
 ``fit2``: model v2, fitted and judged on the whole of 10:00 to 15:30, with morning
-and afternoon rows as in-sample diagnostics.  ``heldout``: the fit2 parameters
+and afternoon rows as in-sample diagnostics.  ``fit3``: model v3, same windows, with row C7
+beside the others.  ``heldout``: the fit3 parameters
 against DATA_DIR/heldout/extract, once; it refuses to overwrite an earlier result.
 """
 import argparse
@@ -40,8 +42,8 @@ from lobmod.gof import ks_test_exp
 from lobmod.research.kernels import FlatBaseline, fit_fixed_mixture, fit_power_law, fit_residuals, fit_sum_exp
 from lobmod.research.seasonality import LinearSplineBaseline
 from lobmod.sim.calibrate import (
-    MEAN_LIMIT_LOTS, REFINED_V2, build_stats, evaluate, mean_stats, moment_fit, refine, simulate_stats,
-    structural_fit,
+    MEAN_LIMIT_LOTS, REFINED_V2, REFINED_V3, book_fit, build_stats, evaluate, mean_stats, moment_fit, refine, simulate_stats,
+    evaluate_gaps, structural_fit,
 )
 from real_replay import BUCKET_NS, TICK, aggregate_signs
 
@@ -141,12 +143,12 @@ def real_stats(a, lo, hi, lot):
     g = g[(t >= lo) & (t < hi) & (g[:, 0] > 0)]
     m = (a['ev_ts'] >= lo) & (a['ev_ts'] < hi)
     cls = a['ev_code'][m] // 2
-    _, sg = aggregate_signs(*(x[(a['tr_ts'] >= lo) & (a['tr_ts'] < hi)] for x in (a['tr_ts'], a['tr_sign'])))
+    ots, sg = aggregate_signs(*(x[(a['tr_ts'] >= lo) & (a['tr_ts'] < hi)] for x in (a['tr_ts'], a['tr_sign'])))
     k = a['bucket']
     i = np.nonzero((k[1:] == k[:-1] + 1) & (k[:-1] * BUCKET_NS >= lo) & (k[1:] * BUCKET_NS < hi))[0]
     return build_stats((g[:, 1] - g[:, 0]) / TICK, np.concatenate([g[:, 2], g[:, 3]]) / lot,
                        int(np.sum(cls == 0)), int(np.sum(cls == 1)), int(np.sum(cls == 2)), (hi - lo) / 1e9, sg,
-                       a['ofi'][i + 1], (a['mid_end'][i + 1] - a['mid_end'][i]) / TICK)
+                       a['ofi'][i + 1], (a['mid_end'][i + 1] - a['mid_end'][i]) / TICK, ots / 1e9)
 
 
 def simulated(flow, seeds, T):
@@ -217,11 +219,42 @@ def fit2_one(job):
                  'afternoon': evaluate(paths, afternoon), 'seconds': round(time.time() - t0)}
 
 
+def fit3_one(job):
+    data, sym = job
+    t0 = time.time()
+    a = load(data, sym)
+    m = (a['ev_ts'] >= START) & (a['ev_ts'] < END) & (a['ev_code'] // 2 == 0)
+    lot = float(a['ev_size'][m].mean()) / MEAN_LIMIT_LOTS
+    real = real_stats(a, START, END, lot)
+    ts, _ = order_times(a, START, END)
+    t = (ts - START) / 1e9
+    h = fit_sum_exp(t[t > 0], (END - START) / 1e9, 1, n_starts=1)
+    gaps = np.diff(t)
+    short = gaps[gaps < 1e-3]
+    start = book_fit(real, moment_fit(real, branching=min(h.branching, 0.9), beta=float(h.betas[0])),
+                     activity_ratio(a, START, END), real['gap_shares'][1],
+                     float(short.mean()) if short.size else 2e-4)
+
+    def sim(flow):
+        try:
+            return simulated(flow, FIT_SEEDS, FIT_T)
+        except ValueError:
+            return {**real, 'event_rate': 100.0 * real['event_rate']}
+
+    res = refine(real, start, sim, BUDGET, REFINED_V3)
+    print(f'{sym} refined {res.start_value:.1f} -> {res.value:.1f} in {time.time() - t0:.0f}s', flush=True)
+    paths = simulated(res.flow, CHECK_SEEDS, CHECK_T)
+    morning, afternoon = real_stats(a, START, MIDDAY, lot), real_stats(a, MIDDAY, END, lot)
+    return sym, {'lot_shares': lot, 'flow': asdict(res.flow), 'distance': res.value, 'real': real, 'sim': paths,
+                 'in_sample': evaluate(paths, real), 'c7': evaluate_gaps(paths, real), 'morning': evaluate(paths, morning),
+                 'afternoon': evaluate(paths, afternoon), 'seconds': round(time.time() - t0)}
+
+
 def heldout_one(job):
     data, sym, fitted = job
     a = load(Path(data) / 'heldout', sym)
     real = real_stats(a, START, END, fitted['lot_shares'])
-    return sym, {'real': real, 'held_out': evaluate(fitted['sim'], real)}
+    return sym, {'real': real, 'held_out': evaluate(fitted['sim'], real), 'c7': evaluate_gaps(fitted['sim'], real)}
 
 
 def verdict(res, names=('in_sample', 'within_day')):
@@ -236,7 +269,7 @@ def verdict(res, names=('in_sample', 'within_day')):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('mode', choices=('hawkes', 'fit', 'fit2', 'heldout'))
+    ap.add_argument('mode', choices=('hawkes', 'fit', 'fit2', 'fit3', 'heldout'))
     ap.add_argument('data')
     ap.add_argument('symbols', nargs='*', default=list(SYMBOLS))
     ap.add_argument('--workers', type=int, default=4)
@@ -245,20 +278,21 @@ def main():
         target = Path(a.data) / 'heldout_results.json'
         if target.exists():
             raise SystemExit('held-out result exists: the test runs once')
-        fitted = json.loads((Path(a.data) / 'calibration_v2_results.json').read_text())['symbols']
+        fitted = json.loads((Path(a.data) / 'calibration_v3_results.json').read_text())['symbols']
         with ProcessPoolExecutor(a.workers) as ex:
             res = dict(ex.map(heldout_one, [(a.data, s, fitted[s]) for s in a.symbols]))
         target.write_text(json.dumps({'symbols': res, 'verdict': verdict(res, ('held_out',))}, indent=1, default=str))
         print('written', target.name, flush=True)
         return
-    fn = {'hawkes': hawkes_one, 'fit': fit_one, 'fit2': fit2_one}[a.mode]
+    fn = {'hawkes': hawkes_one, 'fit': fit_one, 'fit2': fit2_one, 'fit3': fit3_one}[a.mode]
     with ProcessPoolExecutor(a.workers) as ex:
         res = dict(ex.map(fn, [(a.data, s) for s in a.symbols]))
     if a.mode != 'hawkes':
-        names = ('in_sample', 'morning', 'afternoon') if a.mode == 'fit2' else ('in_sample', 'within_day')
+        names = ('in_sample', 'morning', 'afternoon') if a.mode in ('fit2', 'fit3') else ('in_sample', 'within_day')
         res = {'symbols': res, 'verdict': verdict(res, names)}
     name = {'hawkes': 'hawkes_results.json', 'fit': 'calibration_results.json',
-            'fit2': 'calibration_v2_results.json'}[a.mode]
+            'fit2': 'calibration_v2_results.json',
+            'fit3': 'calibration_v3_results.json'}[a.mode]
     (Path(a.data) / name).write_text(json.dumps(res, indent=1, default=str))
     print('written', name, flush=True)
 

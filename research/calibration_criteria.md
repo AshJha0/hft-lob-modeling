@@ -62,3 +62,13 @@ Known limit. Order timing below one millisecond is not modelled; no criterion ro
 ### 2026-11-06: model v2 result
 
 v2 failed the in-sample evaluation and missed the checkpoint set before the fit, which asked for about half the symbols to pass in sample. Per that rule, work on this model stopped and the held-out test was not run. The second day's extract exists locally, was not read, and remains available for one later test. Sign memory improved; the order-flow row got worse in sample, because fitted impact stays too weak for most symbols. Lag-100 sign memory is noisy on thin symbols, where a simulated path holds few aggressive orders. The criterion is left as it is.
+
+### 2026-11-06: model v3, written before any v3 fit
+
+v3 is a new model and a new evaluation. Rows C1 to C6, their tolerances, the 8 of 10 pass mark and the windows of v2 are unchanged.
+
+What v3 adds, off by default. Price formation: fair-value steps of one tick in place of steps near the spread, and `book_feedback`, the share of any mid move caused by an aggressive order that becomes permanent. This replaces `impact` in the refined parameters, and impact starts at zero. Bursts: each aggressive order may be followed by same-side orders after short exponential gaps, set by `burst_prob` and `burst_gap`. Lag-1 side memory is set net of what bursts supply.
+
+New row C7, reported beside the others: share of gaps between consecutive aggressive orders below 100 microseconds, 1 ms and 10 ms, absolute gap <= 0.10 at each. C7 is reported separately and does not enter the symbol pass, so that v3 stays comparable with v1 and v2.
+
+Checkpoint, set now: the held-out test runs only if at least 5 of 10 symbols pass rows C1 to C6 in sample. There is one fit, with the same budget. If the checkpoint is missed, the held-out day stays unused and the result is reported as a failure. If it is met, the test runs once, and the 8 of 10 mark applies to it.

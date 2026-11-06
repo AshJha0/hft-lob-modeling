@@ -40,6 +40,9 @@ BUCKET_S = 10.0
 GRID_S = 0.1
 REFINED = ("limit_rate", "cancel_rate", "queue_scale", "p_geometric", "jump_rate")
 REFINED_V2 = REFINED + ("impact",)
+REFINED_V3 = REFINED + ("book_feedback",)
+GAP_LIMITS = (1e-4, 1e-3, 1e-2)   # row C7, seconds
+C7_TOLERANCE = 0.10
 _STEP = 6.0                 # log multiplier per unit: the optimiser's first step is 0.3
 
 #: every row of research/calibration_criteria.md
@@ -71,13 +74,21 @@ def r_squared(x: Sequence[float], y: Sequence[float]) -> float:
 
 def build_stats(spread_ticks: Sequence[float], touch_lots: Sequence[float], n_add: int, n_cancel: int,
                 n_fill: int, seconds: float, signs: Sequence[int], ofi: Sequence[float],
-                dmid: Sequence[float]) -> Dict[str, object]:
-    """One definition of each statistic, shared by real data and simulated paths."""
+                dmid: Sequence[float], order_times: Optional[Sequence[float]] = None) -> Dict[str, object]:
+    """One definition of each statistic, shared by real data and simulated paths.
+
+    ``order_times`` is in seconds; when given, the stats gain ``gap_shares`` for row C7.
+    """
     n = n_add + n_cancel + n_fill
     if n <= 0 or seconds <= 0.0:
         raise ValueError("need positive event count and duration")
     q = np.asarray(touch_lots, dtype=float)
+    extra: Dict[str, object] = {}
+    if order_times is not None:
+        gaps = np.diff(np.asarray(order_times, dtype=float))
+        extra["gap_shares"] = [float(np.mean(gaps < g)) if gaps.size else 0.0 for g in GAP_LIMITS]
     return {
+        **extra,
         "spread_dist": spread_distribution(spread_ticks),
         "event_mix": [n_add / n, n_cancel / n, n_fill / n],
         "event_rate": n / seconds,
@@ -119,6 +130,12 @@ def evaluate(sim: Mapping[str, object], real: Mapping[str, object]) -> Dict[str,
     c6 = _ratio(sim["vol10"], real["vol10"])
     rows["C6"] = {"value": c6, "passed": within(c6, tol["C6"])}
     return rows
+
+
+def evaluate_gaps(sim: Mapping[str, object], real: Mapping[str, object]) -> Dict[str, object]:
+    """Row C7, kept apart from :func:`evaluate` so rows C1 to C6 stay comparable across models."""
+    gaps = [abs(a - b) for a, b in zip(sim["gap_shares"], real["gap_shares"])]
+    return {"value": gaps, "passed": all(g <= C7_TOLERANCE for g in gaps)}
 
 
 def distance(sim: Mapping[str, object], real: Mapping[str, object]) -> float:
@@ -198,11 +215,28 @@ def structural_fit(stats: Mapping[str, object], start: FlowParams, active_mult: 
                    active_mult=max(float(active_mult), 1.0))
 
 
+def book_fit(stats: Mapping[str, object], start: FlowParams, active_mult: float, burst_prob: float,
+             burst_gap: float) -> FlowParams:
+    """Model v3 starting point: one-tick steps, book feedback, bursts on top of the flow.
+
+    A share ``p`` of orders are burst followers, so parents are scaled by ``1 - p``.
+    Followers repeat the side, so the parent chain supplies only the rest of lag-1 memory.
+    """
+    p = min(max(float(burst_prob), 0.0), 0.9)
+    a1 = stats["sign_acf"][0]
+    a1 = 0.0 if math.isnan(a1) else a1
+    r2 = min(max(float(stats["ofi_r2"]), 0.05), 0.95)
+    return replace(start, mu=tuple(m * (1.0 - p) for m in start.mu), jump_sd=1.0,
+                   jump_rate=float(stats["vol10"]) ** 2 * (1.0 - r2) / BUCKET_S, book_feedback=0.5, impact=0.0,
+                   sign_persist=min(max((a1 - p) / (1.0 - p), 0.0), 0.95), active_mult=max(float(active_mult), 1.0),
+                   burst_prob=p, burst_gap=float(burst_gap))
+
+
 def _apply(flow: FlowParams, x: Sequence[float], names: Sequence[str] = REFINED) -> FlowParams:
     over = {}
     for name, v in zip(names, x):
         value = getattr(flow, name) * math.exp(_STEP * (v - 1.0))
-        over[name] = min(value, 0.95) if name == "p_geometric" else value
+        over[name] = min(value, {"p_geometric": 0.95, "book_feedback": 1.0}.get(name, math.inf))
     return replace(flow, **over)
 
 
@@ -308,7 +342,8 @@ def simulate_stats(flow: FlowParams, T: float, seed: int, warmup: float = 60.0) 
     ofi = [sim.ofi.get(int(k), 0.0) for k in edges[:-1]]
     t = np.asarray(sim.order_t)
     signs = np.asarray(sim.order_sign)[t >= warmup] if t.size else np.array([], dtype=int)
-    return build_stats(spread, touch, sim.n_add, sim.n_cancel, sim.n_fill, T, signs, ofi, np.diff(mid))
+    kept = t[t >= warmup] if t.size else t
+    return build_stats(spread, touch, sim.n_add, sim.n_cancel, sim.n_fill, T, signs, ofi, np.diff(mid), kept)
 
 
 def mean_stats(paths: Sequence[Mapping[str, object]]) -> Dict[str, object]:

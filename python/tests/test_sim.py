@@ -205,3 +205,26 @@ def test_v2_flow_defaults_are_off_and_features_work():
     moved = Simulator(dataclasses.replace(base, impact=0.5, jump_rate=0.0), [], 300.0, 3).run()
     still = Simulator(dataclasses.replace(base, jump_rate=0.0), [], 300.0, 3).run()
     assert moved.final_fair != 10000.0 and still.final_fair == 10000.0
+
+
+def test_v3_bursts_and_book_feedback():
+    import dataclasses
+
+    import numpy as np
+
+    from lobmod.sim.calibrate import simulate_stats
+    from lobmod.sim.engine import FlowParams, Simulator
+
+    base = FlowParams()
+    a = Simulator(base, [], 120.0, 5).run()
+    b = Simulator(dataclasses.replace(base, burst_gap=0.5), [], 120.0, 5).run()
+    assert a.n_events == b.n_events and np.array_equal(a.mid, b.mid)   # inert while off
+
+    plain = simulate_stats(base, 900.0, 3)
+    burst = simulate_stats(dataclasses.replace(base, burst_prob=0.5), 900.0, 3)
+    assert burst["gap_shares"][1] > plain["gap_shares"][1] + 0.3
+    assert 1.5 < burst["order_rate"] / plain["order_rate"] < 2.5        # one follower on average
+
+    calm = dataclasses.replace(base, jump_rate=0.0)
+    kept = Simulator(dataclasses.replace(calm, book_feedback=1.0), [], 300.0, 3).run()
+    assert kept.final_fair != 10000.0 and Simulator(calm, [], 300.0, 3).run().final_fair == 10000.0

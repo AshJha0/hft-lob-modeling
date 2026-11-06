@@ -59,6 +59,9 @@ class FlowParams:
     active_mult: float = 1.0       # rate in the active state over the calm state; 1 = off
     active_share: float = 0.2      # long-run share of time in the active state
     active_dwell: float = 300.0    # mean active spell, seconds
+    book_feedback: float = 0.0     # share of an aggressive order's mid move kept in fair value
+    burst_prob: float = 0.0        # chance an aggressive order is followed by a same-side one
+    burst_gap: float = 0.0002      # mean gap inside a burst, seconds
 
 
 @dataclass(frozen=True)
@@ -150,12 +153,13 @@ class Simulator:
         self.flow, self.T, self.seed = flow, float(T), int(seed)
         self.book = LimitOrderBook(1.0, record_trades=False)
         self.agents = [_Agent(a) for a in agents]
-        ss = np.random.SeedSequence(self.seed).spawn(5)
+        ss = np.random.SeedSequence(self.seed).spawn(6)
         self._rng_fair = np.random.default_rng(ss[0])
         self._rng_bg = np.random.default_rng(ss[1])
         self._hawkes_seed = int(ss[2].generate_state(1)[0]) | 1
         self._rng_side = np.random.default_rng(ss[3])
         self._rng_state = np.random.default_rng(ss[4])
+        self._rng_burst = np.random.default_rng(ss[5])
         self.activity = 1.0
         self._ubuf: List[float] = []
         self.fair = self.anchor = float(flow.start_price)
@@ -392,6 +396,11 @@ class Simulator:
             self._advance_anchor(t)
             self.fair += (1.0 if side == "B" else -1.0) * self.flow.impact * size
         self._touch(t)
+        if self.flow.book_feedback and self.mid != mid_pre:
+            self._advance_anchor(t)
+            move = self.flow.book_feedback * (self.mid - mid_pre)
+            self.fair += move
+            self.anchor += move
 
     def _informed(self, t: float) -> None:
         p = self.flow
@@ -476,6 +485,25 @@ class Simulator:
         start = int(self._rng_side.integers(0, 2))
         return ((start + np.cumsum(flips)) % 2).tolist()
 
+    def _add_bursts(self, times: List[float], types: List[int]) -> tuple:
+        """Follow each order with a geometric number of same-side orders, in time order."""
+        p = self.flow
+        t = np.asarray(times, dtype=float)
+        side = np.asarray(types, dtype=int)
+        extra = self._rng_burst.geometric(1.0 - p.burst_prob, t.size) - 1
+        parent = np.repeat(np.arange(t.size), extra)
+        first = np.cumsum(extra) - extra
+        step = self._rng_burst.exponential(p.burst_gap, parent.size)
+        total = np.cumsum(step)
+        base = np.where(extra > 0, total[np.minimum(first, max(parent.size - 1, 0))] - step[
+            np.minimum(first, max(parent.size - 1, 0))], 0.0) if parent.size else np.zeros(t.size)
+        child_t = t[parent] + total - base[parent] if parent.size else np.zeros(0)
+        all_t = np.concatenate([t, child_t])
+        all_s = np.concatenate([side, side[parent]])
+        keep = all_t <= self.T
+        order = np.argsort(all_t[keep], kind="stable")
+        return all_t[keep][order].tolist(), all_s[keep][order].tolist()
+
     def run(self) -> SimResult:
         p = self.flow
         horizon = self.T
@@ -493,6 +521,8 @@ class Simulator:
         times, types = times.tolist(), types.tolist()
         if p.sign_persist:
             types = self._chain_sides(len(times))
+        if p.burst_prob:
+            times, types = self._add_bursts(times, types)
         sizes = (1 + self._rng_fair.integers(0, 3, len(times))).tolist()
         n_j = int(self._rng_fair.poisson(p.jump_rate * self.T))
         jump_t = np.sort(self._rng_fair.uniform(0.0, self.T, n_j)).tolist()
