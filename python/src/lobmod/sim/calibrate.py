@@ -39,6 +39,7 @@ MEAN_LIMIT_LOTS = 2.5       # the engine draws limit sizes uniformly from 1..4
 BUCKET_S = 10.0
 GRID_S = 0.1
 REFINED = ("limit_rate", "cancel_rate", "queue_scale", "p_geometric", "jump_rate")
+REFINED_V2 = REFINED + ("impact",)
 _STEP = 6.0                 # log multiplier per unit: the optimiser's first step is 0.3
 
 #: every row of research/calibration_criteria.md
@@ -181,9 +182,25 @@ def moment_fit(stats: Mapping[str, object], base: FlowParams = FlowParams(), bra
                    limit_rate=limit_rate, queue_scale=queue_scale, cancel_rate=cancel_rate)
 
 
-def _apply(flow: FlowParams, x: Sequence[float]) -> FlowParams:
+def structural_fit(stats: Mapping[str, object], start: FlowParams, active_mult: float = 1.0) -> FlowParams:
+    """Model v2 starting point: split price variance between flow and jumps by OFI R2.
+
+    Aggressive orders average two lots, so permanent impact ``k`` per lot gives
+    roughly ``vol10^2 = 10 * order_rate * (2 k)^2``.  Side memory is set directly
+    from lag-1 sign autocorrelation.
+    """
+    r2 = min(max(float(stats["ofi_r2"]), 0.05), 0.95)
+    var10 = float(stats["vol10"]) ** 2
+    a1 = stats["sign_acf"][0]
+    return replace(start, impact=math.sqrt(r2 * var10 / (BUCKET_S * float(stats["order_rate"]))) / 2.0,
+                   jump_rate=start.jump_rate * (1.0 - r2),
+                   sign_persist=0.0 if math.isnan(a1) else min(max(a1, 0.0), 0.95),
+                   active_mult=max(float(active_mult), 1.0))
+
+
+def _apply(flow: FlowParams, x: Sequence[float], names: Sequence[str] = REFINED) -> FlowParams:
     over = {}
-    for name, v in zip(REFINED, x):
+    for name, v in zip(names, x):
         value = getattr(flow, name) * math.exp(_STEP * (v - 1.0))
         over[name] = min(value, 0.95) if name == "p_geometric" else value
     return replace(flow, **over)
@@ -203,11 +220,11 @@ class FitResult:
 
 
 def refine(real: Mapping[str, object], start: FlowParams, simulate: Callable[[FlowParams], Mapping[str, object]],
-           budget: int = 60) -> FitResult:
+           budget: int = 60, names: Sequence[str] = REFINED) -> FitResult:
     """Stage 2: search within ``budget`` calls of ``simulate``; keeps the best seen."""
     if budget < 1:
         raise ValueError("budget must be >= 1")
-    best: List = [math.inf, list(np.ones(len(REFINED)))]
+    best: List = [math.inf, list(np.ones(len(names)))]
     calls = [0]
     first: List[float] = []
 
@@ -215,7 +232,7 @@ def refine(real: Mapping[str, object], start: FlowParams, simulate: Callable[[Fl
         if calls[0] >= budget:
             raise _Spent
         calls[0] += 1
-        value = distance(simulate(_apply(start, x)), real)
+        value = distance(simulate(_apply(start, x, names)), real)
         if not first:
             first.append(value)
         if value < best[0]:
@@ -226,7 +243,7 @@ def refine(real: Mapping[str, object], start: FlowParams, simulate: Callable[[Fl
         nelder_mead(objective, best[1], xatol=1e-3, fatol=1e-3, maxiter=budget)
     except _Spent:
         pass
-    return FitResult(_apply(start, best[1]), start, best[0], first[0], calls[0])
+    return FitResult(_apply(start, best[1], names), start, best[0], first[0], calls[0])
 
 
 class _Recording(Simulator):

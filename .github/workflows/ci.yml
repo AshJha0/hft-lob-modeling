@@ -27,8 +27,8 @@ jobs:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements.txt pytest pytest-cov
@@ -49,7 +49,7 @@ jobs:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo clippy --all-targets
@@ -68,7 +68,7 @@ jobs:
       run:
         working-directory: cpp
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y libgtest-dev
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
       - run: cmake --build build --parallel
@@ -80,8 +80,8 @@ jobs:
       run:
         working-directory: java
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
@@ -93,9 +93,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sh fuzz/run.sh 60
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: fuzz-crashes
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y clang-tidy
       - run: cmake -S cpp/fast -B build-tidy -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - run: clang-tidy -p build-tidy cpp/fast/bench.cpp cpp/fast/itch_bench.cpp cpp/fast/test_itch.cpp cpp/src/book.cpp
@@ -115,7 +115,7 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The pattern is split so this file does not match itself.
       - name: Banned word check
         run: |

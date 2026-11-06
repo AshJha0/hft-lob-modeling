@@ -20,7 +20,7 @@ Whether `lobmod.sim`, fitted to one symbol's summary statistics, reproduces that
 
 1. In sample: simulated statistics against the fit window.
 2. Within-day check: the same fitted parameters against the check window. Same day, same stock: a weak test of stability, and not a substitute for item 3.
-3. Held-out day: the same fitted parameters against another trading day. **This needs a second file, which is not available, so this evaluation is NOT DONE.** No claim may be made that depends on it.
+3. Held-out day: the same fitted parameters against another trading day. **NOT DONE so far: the file is now available, but no model has reached this test (see the change log).** No claim may be made that depends on it.
 
 ## Statistics and tolerances
 
@@ -47,4 +47,18 @@ A symbol passes an evaluation only if every row passes. The simulator passes an 
 
 ## Change log
 
-None so far.
+### 2026-11-06: model v2, written before any v2 fit
+
+The v1 result stands: it failed, and that record is not changed. The rule that simulator code is not changed to help a statistic pass applied to the v1 evaluation. v2 is a new model, judged as a new evaluation. Every tolerance and the 8 of 10 pass mark are unchanged.
+
+Why the model changed. A look at the v1 failures, using the fit day only, found four things. The fall in activity after midday is real, not an extract fault, and much of it is one burst late in the morning, so a fixed clock-time curve would memorise that day. The Hawkes rate sat on its upper bound for every symbol. Lag-1 sign memory was too weak and no fitted parameter could move it. Prices moved mainly by exogenous jumps, so order flow explained too little of them.
+
+What v2 adds, all off by default: a two-state activity level with a mean multiplier of one, a Markov chain for aggressive-order side, and a permanent impact of aggressive orders on fair value. Impact joins the refined parameters. Fit budget and paths are unchanged.
+
+Windows change. v2 is fitted on the whole of 10:00 to 15:30 of the first day and judged on that same window, so the afternoon is no longer unseen. Morning and afternoon rows are still reported, for comparison with v1, but they are in-sample diagnostics. The only out-of-sample evaluation is the held-out day, the second file, now available: the same parameters against its 10:00 to 15:30 window, run once. It is reported whatever the outcome, and no change follows it.
+
+Known limit. Order timing below one millisecond is not modelled; no criterion row depends on it, and the rate bound remains.
+
+### 2026-11-06: model v2 result
+
+v2 failed the in-sample evaluation and missed the checkpoint set before the fit, which asked for about half the symbols to pass in sample. Per that rule, work on this model stopped and the held-out test was not run. The second day's extract exists locally, was not read, and remains available for one later test. Sign memory improved; the order-flow row got worse in sample, because fitted impact stays too weak for most symbols. Lag-100 sign memory is noisy on thin symbols, where a simulated path holds few aggressive orders. The criterion is left as it is.

@@ -1133,6 +1133,10 @@ FastBook in Python or Java. Timings are in `docs/LATENCY.md`.
 Change one thing at a time and keep the seed, because the seed fixes the flow up
 to the point where your agent starts to change it.
 
+Model v2 adds `sign_persist` (lag-1 memory of aggressive side), `impact` (permanent
+fair-value move per aggressive lot) and `active_mult`, `active_share`, `active_dwell`
+(a two-state activity level whose mean multiplier is one). All are off by default.
+
 | To change | Parameter |
 |---|---|
 | how much flow is informed | `p_informed`, `informed_per_jump`, `informed_margin` |
