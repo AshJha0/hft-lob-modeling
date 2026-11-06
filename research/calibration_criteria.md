@@ -72,3 +72,7 @@ What v3 adds, off by default. Price formation: fair-value steps of one tick in p
 New row C7, reported beside the others: share of gaps between consecutive aggressive orders below 100 microseconds, 1 ms and 10 ms, absolute gap <= 0.10 at each. C7 is reported separately and does not enter the symbol pass, so that v3 stays comparable with v1 and v2.
 
 Checkpoint, set now: the held-out test runs only if at least 5 of 10 symbols pass rows C1 to C6 in sample. There is one fit, with the same budget. If the checkpoint is missed, the held-out day stays unused and the result is reported as a failure. If it is met, the test runs once, and the 8 of 10 mark applies to it.
+
+### 2026-11-06: model v3 result
+
+v3 failed the in-sample evaluation and missed its checkpoint: fewer than 5 of 10 symbols passed rows C1 to C6. Per that rule, the held-out test was not run, and the second day's extract remains unread. Book feedback helped the order-flow row on liquid symbols, but thin symbols stayed poor, and volatility and sign memory got worse. Most symbols failed C7. No further fit was run. The next attempt needs a new logged design; the failure of three models suggests the structure of thin-symbol price formation, not tuning, is what remains unexplained.

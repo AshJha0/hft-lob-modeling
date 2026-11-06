@@ -1,6 +1,6 @@
 [package]
 name = "lobmod"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "High-frequency limit-order-book modeling: LOB simulator, Hawkes processes, deterministic MLP"
 

@@ -1116,7 +1116,7 @@ these mistakes was made, or nearly made, in this repository.
    events, and even perfect foresight averages −0.868 ticks. Accuracy at that
    horizon is unrelated to money. Work out the best possible P&L before you model.
 5. **Calibration that failed.** The criteria were written first, and the attempt
-   failed, and so did a rebuilt model (section 10.13). Had the targets been chosen
+   failed, and so did two rebuilt models (section 10.13). Had the targets been chosen
    afterwards, it might have looked fine. Write the pass mark down first, and report
    the failure. Stopping at a checkpoint set in advance also kept the one held-out
    day unspent, ready for a model that earns the test.
@@ -1135,7 +1135,7 @@ One IEX DEEP+ file, 12 December 2025, was replayed for AAPL, MSFT and INTC with 
 
 The parser and book were replayed on public ITCH 5.0 sample files for ten symbols with no parser or book anomalies and every execution at the touch. That is internal consistency, not comparison with a venue snapshot. Raw data is not redistributed.
 
-Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED twice. Model v1 (v1.3.0) did not meet the criteria in sample and its parameters did not carry across the day. Model v2 (v1.4.0) added an activity state, side memory and flow impact; sign memory improved, but it also missed the pass mark in sample, and order flow still explains too little of simulated price moves for most symbols. It stopped at a checkpoint set before the fit, so the held-out day has not been run and stays unused. The simulator remains uncalibrated and its P&L levels mean nothing.
+Calibration of `lobmod.sim` to real data was attempted against criteria fixed in advance ([research/calibration_criteria.md](research/calibration_criteria.md)) and FAILED three times. Model v1 (v1.3.0) did not meet the criteria in sample and its parameters did not carry across the day. Model v2 (v1.4.0) added an activity state, side memory and flow impact; sign memory improved, but it also missed the pass mark in sample. Model v3 (v1.5.0) added book-driven price moves and order bursts. Order flow explained simulated prices better on liquid symbols, but thin symbols stayed poor, volatility and sign memory got worse, and no symbol passed every row in sample. v2 and v3 each stopped at a checkpoint set before the fit, so the held-out day has not been run and stays unused. The simulator remains uncalibrated and its P&L levels mean nothing.
 
 Hawkes on real trades, qualitative only: a seasonal two-timescale model is preferred over a single exponential, but the fast rate hits its bound and branching is not resolved, so no value is quoted. Sub-millisecond burst structure cannot be attributed to a mechanism from this feed. The "Branching against
 seasonality" diagram in `docs/ARCHITECTURE.md` shows why the two explanations are

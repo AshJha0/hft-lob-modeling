@@ -5,6 +5,27 @@ All notable changes to this project are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-11-06
+
+### Added
+
+- Simulator model v3: `FlowParams` fields `book_feedback`, `burst_prob` and `burst_gap`, all off by default, so earlier paths are unchanged.
+- `lobmod.sim.calibrate.book_fit`, `evaluate_gaps`, `REFINED_V3` and row C7, on short gaps between aggressive orders. `build_stats` takes optional order times.
+- `fit3` mode in `research/calibrate.py`. `heldout` now reads the v3 fit.
+
+### Changed
+
+- `research/calibration_criteria.md` logs the v3 design and checkpoint, written before any v3 fit, and its result. Tolerances and the pass mark are unchanged.
+
+### Results
+
+- **Failed:** calibration of model v3, against the same criteria. Order flow explained simulated prices better on liquid symbols, but no symbol passed every row in sample, and most failed the new gap row. The checkpoint was missed, so the held-out day was not read or tested. The simulator remains uncalibrated.
+
+### Known limits
+
+- Gap shares below 10 ms are not reproduced for most symbols.
+- Price formation on thin symbols remains poor.
+
 ## [1.4.0] - 2026-11-06
 
 ### Added
