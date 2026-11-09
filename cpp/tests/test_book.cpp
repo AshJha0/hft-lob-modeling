@@ -555,7 +555,14 @@ TEST(Edge, Rosenbrock4dIterationCountIsPinned) {
         }
         return total;
     };
-    EXPECT_EQ(lobmod::nelder_mead(rosen, {-1.2, 1.0, 0.7, 1.3}).n_iter, 308);
+    const auto n_iter = lobmod::nelder_mead(rosen, {-1.2, 1.0, 0.7, 1.3}).n_iter;
+#if defined(__SANITIZE_ADDRESS__)
+    // Sanitizer builds compile without the release optimisations, so the last
+    // bits of each floating-point step can differ and the count may move by 2.
+    EXPECT_NEAR(static_cast<double>(n_iter), 308.0, 2.0);
+#else
+    EXPECT_EQ(n_iter, 308);
+#endif
 }
 
 // ------------------------------------------------- L3 operations and schema v2
