@@ -106,7 +106,7 @@ exactly — book replay is pure integer bookkeeping, so tolerance 1e-12 is reall
   the spread is nearly always one tick, so you earn the spread by *being early
   in the queue*, which is why this project models FIFO queues explicitly.
 - **FX** is an over-the-counter dealer market. The closest analogues to a CLOB
-  are the primary venues (EBS, Refinitiv Matching) with their own conventions:
+  are the primary venues (the main interdealer FX platforms) with their own conventions:
   prices in *pips* (a 10th of a pip as tick on modern feeds), sizes in millions
   of base currency, and **last-look**: a liquidity provider may reject your
   aggression after the fact, something a matching engine never does. Much FX
