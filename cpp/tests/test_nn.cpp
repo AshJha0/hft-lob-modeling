@@ -2,6 +2,7 @@
 /// differences, softmax properties, deterministic retraining, degenerate
 /// labels, metrics, and validation errors.
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 #include <gtest/gtest.h>
